@@ -7,6 +7,7 @@
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include "../Features/Visuals/Materials/Materials.h"
 #include "../Features/Visuals/Visuals.h"
+#include "../Features/DiscordRPC/DiscordRPC.h"
 #include "../SDK/Events/Events.h"
 #include <Psapi.h>
 
@@ -32,14 +33,14 @@ static inline bool CheckDXLevel()
 	if (mat_dxlevel->GetInt() < 90)
 	{
 		/*
-		const char* sMessage = "You are running with graphics options that Amalgam does not support. -dxlevel must be at least 90.";
+		const char* sMessage = "You are running with graphics options that Aletherium does not support. -dxlevel must be at least 90.";
 		U::Core.AppendFailText(sMessage);
-		SDK::Output("Amalgam", sMessage, DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+		SDK::Output("Aletherium", sMessage, DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 		return false;
 		*/
 
-		const char* sMessage = "You are running with graphics options that Amalgam does not support. It is recommended for -dxlevel to be at least 90.";
-		SDK::Output("Amalgam", sMessage, DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+		const char* sMessage = "You are running with graphics options that Aletherium does not support. It is recommended for -dxlevel to be at least 90.";
+		SDK::Output("Aletherium", sMessage, DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 
 	return true;
@@ -69,7 +70,7 @@ void CCore::LogFailText()
 
 		m_ssFailStream << "\n";
 		m_ssFailStream << "Ctrl + C to copy. \n";
-		m_ssFailStream << "Logged to Amalgam\\fail_log.txt. ";
+		m_ssFailStream << "Logged to Aletherium\\fail_log.txt. ";
 	}
 	catch (...) {}
 
@@ -116,13 +117,19 @@ void CCore::Load()
 
 	F::Configs.LoadConfig(F::Configs.m_sCurrentConfig, false);
 
-	SDK::Output("Amalgam", "Loaded", DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+	// Initialize Discord RPC
+	F::DiscordRPC.Initialize();
+
+	SDK::Output("Aletherium", "Loaded", DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 }
 
 void CCore::Loop()
 {
 	while (true)
 	{
+		// Update Discord RPC
+		F::DiscordRPC.Update();
+
 		bool bShouldUnload = U::KeyHandler.Down(VK_F11) && SDK::IsGameWindowInFocus() || m_bUnload;
 		if (bShouldUnload)
 			break;
@@ -138,6 +145,9 @@ void CCore::Unload()
 		LogFailText();
 		return;
 	}
+
+	// Shutdown Discord RPC
+	F::DiscordRPC.Shutdown();
 
 	G::Unload = true;
 	m_bFailed2 = !U::Hooks.Unload() || m_bFailed2;
@@ -169,5 +179,5 @@ void CCore::Unload()
 		return;
 	}
 
-	SDK::Output("Amalgam", "Unloaded", DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
+	SDK::Output("Aletherium", "Unloaded", DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_DEBUG);
 }

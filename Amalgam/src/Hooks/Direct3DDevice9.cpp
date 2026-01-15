@@ -3,7 +3,6 @@
 #include "../SDK/SDK.h"
 #include "../Features/ImGui/Render.h"
 #include "../Features/ImGui/Menu/Menu.h"
-#include "../Features/ImGui/CustomGUI/CustomMenu.h"
 
 // #define USE_CUSTOM_GUI  // Disabled - using original menu
 

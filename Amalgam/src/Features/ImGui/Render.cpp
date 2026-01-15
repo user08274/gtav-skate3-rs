@@ -8,7 +8,7 @@
 #include "Fonts/Roboto/RobotoMedium.h"
 #include "Fonts/Roboto/RobotoBlack.h"
 #include "Menu/Menu.h"
-#include "CustomGUI/CustomMenu.h"
+
 
 // #define USE_CUSTOM_GUI  // Disabled - using original menu
 
@@ -170,6 +170,5 @@ void CRender::Initialize(IDirect3DDevice9* pDevice)
 	LoadFonts();
 	LoadStyle();
 
-	// Initialize custom menu AFTER fonts are loaded
-	F::CustomMenu.Initialize();
+
 }

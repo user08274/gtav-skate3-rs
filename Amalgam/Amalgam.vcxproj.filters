@@ -77,6 +77,7 @@
     <ClCompile Include="src\Features\Visuals\SpectatorList\SpectatorList.cpp" />
     <ClCompile Include="src\Features\Visuals\Visuals.cpp" />
     <ClCompile Include="src\Features\DiscordRPC\DiscordRPC.cpp" />
+    <ClCompile Include="src\Features\Indicators\Indicators.cpp" />
     <ClCompile Include="src\SDK\Definitions\Main\CTFWeaponBase.cpp" />
     <ClCompile Include="src\SDK\Definitions\Main\MD5.cpp" />
     <ClCompile Include="src\SDK\Helpers\TraceFilters\TraceFilters.cpp" />
@@ -418,6 +419,7 @@
     <ClInclude Include="src\Features\Visuals\SpectatorList\SpectatorList.h" />
     <ClInclude Include="src\Features\Visuals\Visuals.h" />
     <ClInclude Include="src\Features\DiscordRPC\DiscordRPC.h" />
+    <ClInclude Include="src\Features\Indicators\Indicators.h" />
     <ClInclude Include="src\SDK\Definitions\Interfaces\IGameMovement.h" />
     <ClInclude Include="src\SDK\Definitions\Interfaces\IInput.h" />
     <ClInclude Include="src\SDK\Definitions\Interfaces\IUniformRandomStream.h" />

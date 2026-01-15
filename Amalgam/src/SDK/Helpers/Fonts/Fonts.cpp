@@ -3,7 +3,7 @@
 void CFonts::Reload(float flDPI)
 {
 	m_mFonts[FONT_ESP] = { "Verdana", int(12.f * flDPI), FONTFLAG_ANTIALIAS, 0 };
-	m_mFonts[FONT_INDICATORS] = { "Verdana", int(13.f * flDPI), FONTFLAG_ANTIALIAS, 0 };
+	m_mFonts[FONT_INDICATORS] = { "Verdana", int(22.f * flDPI), FONTFLAG_ANTIALIAS, 700 };
 
 	for (auto& [_, fFont] : m_mFonts)
 	{

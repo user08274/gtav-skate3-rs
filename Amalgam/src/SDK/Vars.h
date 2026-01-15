@@ -538,6 +538,11 @@ namespace Vars
 			CVar(ScoreboardUtility, "Scoreboard utility", false);
 			CVar(ScoreboardColors, "Scoreboard colors", false, VISUAL);
 			CVar(CleanScreenshots, "Clean screenshots", true);
+			CVar(VelocityIndicator, "Velocity indicator", false, VISUAL);
+			CVar(VelocityTakeoff, "Velocity takeoff", true, VISUAL);
+			CVar(VelocityPos, "Velocity position", 100, VISUAL | SLIDER_CLAMP, 50, 500, 10);
+			CVar(KeybindIndicator, "Keybind indicator", false, VISUAL);
+			CVar(KeybindPos, "Keybind position", 130, VISUAL | SLIDER_CLAMP, 50, 500, 10);
 		SUBNAMESPACE_END(UI);
 
 		SUBNAMESPACE_BEGIN(Thirdperson)

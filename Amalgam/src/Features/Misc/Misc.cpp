@@ -741,7 +741,7 @@ void CMisc::EdgeBugPostPrediction(CTFPlayer* pLocal, CUserCmd* pCmd)
 		
 		if (m_iEdgeBugCurrentTick > m_iEdgeBugLockTicks) {
 			// Edgebug completed successfully
-			I::ClientModeShared->m_pChatElement->ChatPrintf(0, "\x07" "AF96FF" "Alitherium \x07" "FFFFFF" "| Edgebug");
+			I::ClientModeShared->m_pChatElement->ChatPrintf(0, "\x07" "AF96FF" "Aletherium \x07" "FFFFFF" "| Edgebug");
 			m_bEdgeBugDuck = false;
 			m_bEdgeBugDetected = false;
 			m_iEdgeBugCurrentTick = 0;

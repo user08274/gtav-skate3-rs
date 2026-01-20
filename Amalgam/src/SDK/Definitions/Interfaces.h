@@ -36,6 +36,14 @@
 #include "Interfaces/ViewRenderBeams.h"
 #include "Interfaces/VPhysics.h"
 
+// DirectX interface with conflict resolution
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN  
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <d3d9.h>
 MAKE_INTERFACE_SIGNATURE(IDirect3DDevice9, DirectXDevice, "shaderapidx9.dll, shaderapivk.dll", "48 8B 0D ? ? ? ? 48 8B 01 FF 50 ? 8B F8", 0x0, 1)
 

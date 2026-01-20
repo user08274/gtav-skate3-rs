@@ -10,6 +10,7 @@
 #include "../../Visuals/Visuals.h"
 #include "../../Misc/Misc.h"
 #include "../../Output/Output.h"
+#include "../media_player.h"
 
 void CMenu::DrawMenu()
 {
@@ -18,8 +19,8 @@ void CMenu::DrawMenu()
 	static bool bSetPosition = false;
 	if (!bSetPosition)
 	{
-		SetNextWindowPos((GetIO().DisplaySize - ImVec2(H::Draw.Scale(750), H::Draw.Scale(500))) / 2, ImGuiCond_FirstUseEver);
-		SetNextWindowSize({ H::Draw.Scale(750), H::Draw.Scale(500) }, ImGuiCond_FirstUseEver);
+		SetNextWindowPos((GetIO().DisplaySize - ImVec2(H::Draw.Scale(750), H::Draw.Scale(500))) / 2, ImGuiCond_Always);
+		SetNextWindowSize({ H::Draw.Scale(750), H::Draw.Scale(500) }, ImGuiCond_Always);
 		bSetPosition = true;
 	}
 
@@ -29,97 +30,167 @@ void CMenu::DrawMenu()
 	{
 		ImVec2 vWindowPos = GetWindowPos();
 		ImVec2 vWindowSize = GetWindowSize();
-		float flSideSize = 140.f;
-
-		PushClipRect({ 0, 0 }, { ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y }, false);
-		RenderTwoToneBackground(H::Draw.Scale(flSideSize), F::Render.Background0, F::Render.Background1, F::Render.Background2, 0.f, false);
-		PopClipRect();
-
 		ImVec2 vDrawPos = GetDrawPos();
 		auto pDrawList = GetWindowDrawList();
+
+		// Draw main background with border
+		float flInset = H::Draw.Scale();
+		pDrawList->AddRectFilled({ vDrawPos.x + flInset, vDrawPos.y + flInset }, { vDrawPos.x - flInset + vWindowSize.x, vDrawPos.y - flInset + vWindowSize.y }, F::Render.Background0, H::Draw.Scale(4));
 		
-		float flOffset = 0.f;
-		Bind_t tBind;
-		if (!F::Binds.GetBind(CurrentBind, &tBind))
-			CurrentBind = DEFAULT_BIND;
+		// Draw accent border
+		flInset = H::Draw.Scale(0.5f) - 0.5f;
+		pDrawList->AddRect({ vDrawPos.x + flInset, vDrawPos.y + flInset }, { vDrawPos.x - flInset + vWindowSize.x, vDrawPos.y - flInset + vWindowSize.y }, F::Render.Accent, H::Draw.Scale(4), ImDrawFlags_None, H::Draw.Scale(2));
 
-		if (CurrentBind != DEFAULT_BIND) // bind
-		{
-			flOffset = H::Draw.Scale(60);
-			pDrawList->AddRectFilled({ vDrawPos.x, vDrawPos.y + H::Draw.Scale(59) }, { vDrawPos.x + H::Draw.Scale(flSideSize - 1), vDrawPos.y + H::Draw.Scale(60) }, F::Render.Background2);
-
-			SetCursorPos({ H::Draw.Scale(12), H::Draw.Scale(11) });
-			FText("Editing bind", 0, F::Render.FontRegular);
-			SetCursorPos({ H::Draw.Scale(12), H::Draw.Scale(35) });
-			PushStyleColor(ImGuiCol_Text, F::Render.Accent.Value);
-			FText(TruncateText(tBind.m_sName, H::Draw.Scale(flSideSize - 28)).c_str(), 0, F::Render.FontRegular);
-			PopStyleColor();
-
-			SetCursorPos({ H::Draw.Scale(flSideSize - 31), H::Draw.Scale(6) });
-			if (IconButton(ICON_MD_CANCEL))
-				CurrentBind = DEFAULT_BIND;
-		}
-		else if (!Vars::Menu::CheatTitle.Value.empty()) // title
-		{
-			flOffset = H::Draw.Scale(36);
-			pDrawList->AddRectFilled({ vDrawPos.x, vDrawPos.y + H::Draw.Scale(35) }, { vDrawPos.x + H::Draw.Scale(flSideSize - 1), vDrawPos.y + H::Draw.Scale(36) }, F::Render.Background2);
-			
-			SetCursorPos({ H::Draw.Scale(12), H::Draw.Scale(11) });
-			PushStyleColor(ImGuiCol_Text, F::Render.Accent.Value);
-			FText(TruncateText(Vars::Menu::CheatTitle.Value, H::Draw.Scale(flSideSize - 28), F::Render.FontBold).c_str(), 0, F::Render.FontBold);
-			PopStyleColor();
-		}
-
-		static int iTab = 0, iAimbotTab = 0, iVisualsTab = 0, iMiscTab = 0, iLogsTab = 0, iSettingsTab = 0;
+		// Draw title centered
+		float flTitleHeight = H::Draw.Scale(40);
 		PushFont(F::Render.FontBold);
+		PushStyleColor(ImGuiCol_Text, F::Render.Accent.Value);
+		ImVec2 vTitleSize = CalcTextSize("Aletherium");
+		SetCursorPos({ (vWindowSize.x - vTitleSize.x) / 2, H::Draw.Scale(12) });
+		FText("Aletherium");
+		PopStyleColor();
+		PopFont();
+
+		// Draw horizontal line under title
+		pDrawList->AddRectFilled({ vDrawPos.x + H::Draw.Scale(10), vDrawPos.y + flTitleHeight }, { vDrawPos.x + vWindowSize.x - H::Draw.Scale(10), vDrawPos.y + flTitleHeight + H::Draw.Scale(2) }, F::Render.Accent);
+
+		// Draw tabs horizontally
+		static int iTab = 0, iAimbotTab = 0, iVisualsTab = 0, iMiscTab = 0, iLogsTab = 0, iSettingsTab = 0;
+		
+		float flTabHeight = H::Draw.Scale(40);
+		float flTabStartY = flTitleHeight + H::Draw.Scale(10);
+		
+		PushFont(F::Render.FontBold);
+		SetCursorPos({ H::Draw.Scale(20), flTabStartY });
 		FTabs(
 			{
-				{ "AIMBOT", "GENERAL", "DRAW" },
-				{ "VISUALS", "ESP", "MISC##", "MENU" },
-				{ "MISC", "MAIN", "HVH" },
-				{ "LOGS", "PLAYERLIST", "SETTINGS##", "OUTPUT" },
-				{ "SETTINGS", "CONFIG", "BINDS", "MATERIALS", "EXTRA" }
+				{ "Aim" },
+				{ "Visuals" },
+				{ "Misc" },
+				{ "Movement" },
+				{ "Cfg" }
 			},
-			{ &iTab, &iAimbotTab, &iVisualsTab, &iMiscTab, &iLogsTab, &iSettingsTab },
-			{ H::Draw.Scale(flSideSize - 16), H::Draw.Scale(36) },
-			{ H::Draw.Scale(8), H::Draw.Scale(8) + flOffset },
-			FTabsEnum::Vertical | FTabsEnum::HorizontalIcons | FTabsEnum::AlignLeft | FTabsEnum::BarLeft,
-			{ { ICON_MD_PERSON }, { ICON_MD_VISIBILITY }, { ICON_MD_ARTICLE }, { ICON_MD_IMPORT_CONTACTS }, { ICON_MD_SETTINGS } },
-			{ H::Draw.Scale(10), 0 }, {},
-			{}, { H::Draw.Scale(22), 0 }
+			{ &iTab },
+			{ H::Draw.Scale(100), flTabHeight },
+			{ H::Draw.Scale(20), flTabStartY },
+			FTabsEnum::Horizontal | FTabsEnum::AlignCenter | FTabsEnum::BarBottom,
+			{},
+			{}, {},
+			{}, {},
+			0.f, 2.f
 		);
 		PopFont();
 
-		static std::string sSearch = "";
-		SetCursorPos({ H::Draw.Scale(8), vWindowSize.y - H::Draw.Scale(37) });
-		FInputText("Search...", sSearch, H::Draw.Scale(123), ImGuiInputTextFlags_None);
-		bool bSearch = /*IsItemFocused() ||*/ !sSearch.empty();
-		if (!bSearch || FCalcTextSize(sSearch.c_str()).x < 86.f)
+		// Draw subtabs for current tab
+		float flSubTabStartY = flTabStartY + flTabHeight + H::Draw.Scale(10);
+		PushFont(F::Render.FontBold);
+		SetCursorPos({ H::Draw.Scale(20), flSubTabStartY });
+		
+		switch (iTab)
 		{
-			SetCursorPos({ H::Draw.Scale(109), vWindowSize.y - H::Draw.Scale(31) });
-			IconImage(ICON_MD_SEARCH);
+		case 0: // Aim
+			FTabs(
+				{ "GENERAL", "DRAW" },
+				&iAimbotTab,
+				{ H::Draw.Scale(80), H::Draw.Scale(30) },
+				{ H::Draw.Scale(20), flSubTabStartY },
+				FTabsEnum::Horizontal | FTabsEnum::AlignCenter | FTabsEnum::BarBottom,
+				{},
+				{}, {},
+				{}, {},
+				0.f, 2.f
+			);
+			break;
+		case 1: // Visuals
+			FTabs(
+				{ "ESP", "MISC##", "MENU" },
+				&iVisualsTab,
+				{ H::Draw.Scale(80), H::Draw.Scale(30) },
+				{ H::Draw.Scale(20), flSubTabStartY },
+				FTabsEnum::Horizontal | FTabsEnum::AlignCenter | FTabsEnum::BarBottom,
+				{},
+				{}, {},
+				{}, {},
+				0.f, 2.f
+			);
+			break;
+		case 2: // Misc
+			FTabs(
+				{ "MAIN", "HVH" },
+				&iMiscTab,
+				{ H::Draw.Scale(80), H::Draw.Scale(30) },
+				{ H::Draw.Scale(20), flSubTabStartY },
+				FTabsEnum::Horizontal | FTabsEnum::AlignCenter | FTabsEnum::BarBottom,
+				{},
+				{}, {},
+				{}, {},
+				0.f, 2.f
+			);
+			break;
+		case 3: // Movement (was Logs)
+			FTabs(
+				{ "PLAYERLIST", "SETTINGS##", "OUTPUT" },
+				&iLogsTab,
+				{ H::Draw.Scale(80), H::Draw.Scale(30) },
+				{ H::Draw.Scale(20), flSubTabStartY },
+				FTabsEnum::Horizontal | FTabsEnum::AlignCenter | FTabsEnum::BarBottom,
+				{},
+				{}, {},
+				{}, {},
+				0.f, 2.f
+			);
+			break;
+		case 4: // Cfg (was Settings)
+			FTabs(
+				{ "CONFIG", "BINDS", "MATERIALS", "EXTRA" },
+				&iSettingsTab,
+				{ H::Draw.Scale(80), H::Draw.Scale(30) },
+				{ H::Draw.Scale(20), flSubTabStartY },
+				FTabsEnum::Horizontal | FTabsEnum::AlignCenter | FTabsEnum::BarBottom,
+				{},
+				{}, {},
+				{}, {},
+				0.f, 2.f
+			);
+			break;
 		}
-		if (bSearch && IsMouseReleased(ImGuiMouseButton_Left) && IsMouseWithin(vDrawPos.x, vDrawPos.y, H::Draw.Scale(140), vWindowSize.y - H::Draw.Scale(45)))
-			sSearch = "";
+		PopFont();
 
-		SetCursorPos({ H::Draw.Scale(flSideSize), 0 });
+		// Draw avatar and user info at bottom left
+		float flBottomHeight = H::Draw.Scale(60);
+		float flAvatarSize = H::Draw.Scale(40);
+		ImVec2 vAvatarPos = { vDrawPos.x + H::Draw.Scale(15), vDrawPos.y + vWindowSize.y - flBottomHeight + H::Draw.Scale(10) };
+		
+		// Draw avatar circle with accent border
+		pDrawList->AddCircleFilled({ vAvatarPos.x + flAvatarSize / 2, vAvatarPos.y + flAvatarSize / 2 }, flAvatarSize / 2, F::Render.Background2);
+		pDrawList->AddCircle({ vAvatarPos.x + flAvatarSize / 2, vAvatarPos.y + flAvatarSize / 2 }, flAvatarSize / 2, F::Render.Accent, 0, H::Draw.Scale(2));
+		
+		// Draw username and ping
+		SetCursorPos({ H::Draw.Scale(65), vWindowSize.y - flBottomHeight + H::Draw.Scale(15) });
+		PushStyleColor(ImGuiCol_Text, F::Render.Accent.Value);
+		FText("Nympho");
+		PopStyleColor();
+		
+		SetCursorPos({ H::Draw.Scale(65), vWindowSize.y - flBottomHeight + H::Draw.Scale(32) });
+		PushStyleColor(ImGuiCol_Text, F::Render.Inactive.Value);
+		FText("watafaq");
+		PopStyleColor();
+
+		// Content area
+		float flContentStartY = flSubTabStartY + H::Draw.Scale(40);
+		SetCursorPos({ H::Draw.Scale(10), flContentStartY });
 		PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
 		PushStyleVar(ImGuiStyleVar_WindowPadding, { H::Draw.Scale(8), H::Draw.Scale(8) });
-		if (BeginChild("Page", { vWindowSize.x - H::Draw.Scale(flSideSize), vWindowSize.y }, ImGuiChildFlags_AlwaysUseWindowPadding))
+		if (BeginChild("Page", { vWindowSize.x - H::Draw.Scale(20), vWindowSize.y - flContentStartY - flBottomHeight - H::Draw.Scale(10) }, ImGuiChildFlags_AlwaysUseWindowPadding))
 		{
-			if (!bSearch)
+			switch (iTab)
 			{
-				switch (iTab)
-				{
-				case 0: MenuAimbot(iAimbotTab); break;
-				case 1: MenuVisuals(iVisualsTab); break;
-				case 2: MenuMisc(iMiscTab); break;
-				case 3: MenuLogs(iLogsTab); break;
-				case 4: MenuSettings(iSettingsTab); break;
-				}
+			case 0: MenuAimbot(iAimbotTab); break;
+			case 1: MenuVisuals(iVisualsTab); break;
+			case 2: MenuMisc(iMiscTab); break;
+			case 3: MenuLogs(iLogsTab); break;
+			case 4: MenuSettings(iSettingsTab); break;
 			}
-			else
-				MenuSearch(sSearch);
 		} EndChild();
 		PopStyleVar(2);
 
@@ -910,6 +981,7 @@ void CMenu::MenuVisuals(int iTab)
 						FColorPicker(Vars::Colors::FogModulation, FColorPickerEnum::Left);
 					}
 					PopTransparent();
+					
 					FToggle(Vars::Visuals::World::NearPropFade, FToggleEnum::Left);
 					FToggle(Vars::Visuals::World::NoPropFade, FToggleEnum::Right);
 				} EndSection();
@@ -1011,6 +1083,9 @@ void CMenu::MenuMisc(int iTab)
 					PushTransparent(!Vars::Misc::Movement::EdgeBug.Value);
 					{
 						FSlider(Vars::Misc::Movement::EdgeBugLockTicks, FSliderEnum::Left);
+						FToggle(Vars::Misc::Movement::EdgeBugAdvancedSearch, FToggleEnum::Right);
+						FToggle(Vars::Misc::Movement::EdgeBugMouseLock, FToggleEnum::Left);
+						FToggle(Vars::Misc::Movement::EdgeBugAutoStrafe, FToggleEnum::Right);
 					}
 					PopTransparent();
 					FToggle(Vars::Misc::Movement::LongJump, FToggleEnum::Left);
@@ -2518,6 +2593,7 @@ void CMenu::MenuSettings(int iTab)
 			if (BeginWidgetTable(3, vTable))
 			{
 				FToggle(Vars::Menu::Watermark);
+				FToggle(Vars::Menu::MediaPlayer);
 			} EndChild();
 		} EndSection();
 		if (Section("Binds"))
@@ -3747,6 +3823,7 @@ void CMenu::Render()
 	PushFont(F::Render.FontRegular);
 
 	DrawWatermark();
+	DrawMediaPlayer();
 	DrawBinds();
 	if (m_bIsOpen)
 	{
@@ -3919,6 +3996,145 @@ void CMenu::DrawWatermark()
 
 	// "fps" label
 	pDraw->AddText(ImVec2(vPos.x + flCurrentWidth - flPadX - vSizeLabel.x, y), uGrayColor, sFpsLabel.c_str());
+
+	PopFont();
+}
+
+void CMenu::DrawMediaPlayer()
+{
+	using namespace ImGui;
+
+	// Check if media player is enabled
+	if (!Vars::Menu::MediaPlayer.Value)
+		return;
+
+	// Don't draw if no media is playing
+	if (strtitle.empty())
+		return;
+
+	static float flAnimProgress = 0.f;
+	flAnimProgress = ImClamp(flAnimProgress + GetIO().DeltaTime * 5.f, 0.f, 1.f);
+
+	// Calculate progress
+	float progress = 0.0f;
+	if (trackDuration > 0)
+	{
+		progress = static_cast<float>(trackPosition) / static_cast<float>(trackDuration);
+		if (progress > 1.0f)
+			progress = 1.0f;
+	}
+
+	// Smooth progress interpolation
+	static float smoothProgress = 0.0f;
+	if (progress < smoothProgress)
+		smoothProgress = progress;
+	smoothProgress += (progress - smoothProgress) * 0.1f;
+
+	PushFont(F::Render.FontBold);
+
+	float flPadding = 10.0f;
+	float flImageSize = 30.0f;
+	
+	ImVec2 vSizeArtist = CalcTextSize(strartist.c_str());
+	ImVec2 vSizeTitle = CalcTextSize(strtitle.c_str());
+	
+	float flWidth = std::max(vSizeArtist.x, vSizeTitle.x) + flPadding * 3 + flImageSize;
+	float flHeight = 45.0f;
+
+	// Position below watermark if it's visible
+	float flYPos = 10.f;
+	if (Vars::Menu::Watermark.Value)
+		flYPos = 55.f;
+
+	ImVec2 vPos = ImVec2(GetIO().DisplaySize.x - flWidth - 10.f, flYPos);
+	ImVec2 vPosMax = ImVec2(vPos.x + flWidth, vPos.y + flHeight);
+
+	ImDrawList* pDraw = GetBackgroundDrawList();
+
+	// Background (same style as watermark)
+	ImColor tAccent = F::Render.Accent;
+	tAccent.Value.w = flAnimProgress;
+	
+	pDraw->AddRectFilled(vPos, vPosMax, ImColor(40, 40, 40, static_cast<int>(150 * flAnimProgress)), 5.f);
+	pDraw->AddRect(vPos, vPosMax, ImColor(0, 0, 0, static_cast<int>(200 * flAnimProgress)), 5.f);
+	pDraw->AddRectFilled(
+		ImVec2(vPos.x + 2, vPos.y + 2),
+		ImVec2(vPosMax.x - 2, vPosMax.y - 2),
+		ImColor(26, 26, 26, static_cast<int>(255 * flAnimProgress)), 5.f);
+	pDraw->AddRect(
+		ImVec2(vPos.x + 2, vPos.y + 2),
+		ImVec2(vPosMax.x - 2, vPosMax.y - 2),
+		ImColor(0, 0, 0, static_cast<int>(255 * flAnimProgress)), 5.f);
+
+	// Album art (circle or texture)
+	ImVec2 vImagePos = ImVec2(vPos.x + flPadding, vPos.y + (flHeight - flImageSize) / 2);
+	
+	if (albumArtTexture)
+	{
+		// Draw album art texture
+		ImVec2 uv0(0, 0);
+		ImVec2 uv1(1, 1);
+		pDraw->AddImageRounded(
+			(ImTextureID)albumArtTexture,
+			vImagePos,
+			ImVec2(vImagePos.x + flImageSize, vImagePos.y + flImageSize),
+			uv0, uv1,
+			ImColor(255, 255, 255, static_cast<int>(255 * flAnimProgress)),
+			flImageSize / 2);
+		
+		// Draw accent border around image
+		pDraw->AddCircle(
+			ImVec2(vImagePos.x + flImageSize / 2, vImagePos.y + flImageSize / 2),
+			flImageSize / 2,
+			tAccent, 0, 2.f);
+	}
+	else
+	{
+		// Draw placeholder circle
+		pDraw->AddCircleFilled(
+			ImVec2(vImagePos.x + flImageSize / 2, vImagePos.y + flImageSize / 2),
+			flImageSize / 2,
+			ImColor(60, 60, 60, static_cast<int>(255 * flAnimProgress)));
+		pDraw->AddCircle(
+			ImVec2(vImagePos.x + flImageSize / 2, vImagePos.y + flImageSize / 2),
+			flImageSize / 2,
+			tAccent, 0, 2.f);
+	}
+
+	// Text position
+	float flTextX = vPos.x + flPadding * 2 + flImageSize;
+	float flTextY = vPos.y + 8.f;
+
+	// Title (white)
+	pDraw->AddText(
+		ImVec2(flTextX, flTextY),
+		ImColor(255, 255, 255, static_cast<int>(255 * flAnimProgress)),
+		strtitle.c_str());
+
+	// Artist (gray)
+	pDraw->AddText(
+		ImVec2(flTextX, flTextY + 15.f),
+		ImColor(160, 160, 160, static_cast<int>(255 * flAnimProgress)),
+		strartist.c_str());
+
+	// Progress bar (4 pixels from bottom for better visibility)
+	float flProgressBarWidth = flWidth - flPadding * 2;
+	float flProgressBarHeight = 2.f;
+	ImVec2 vProgressPos = ImVec2(vPos.x + flPadding, vPosMax.y - 4.f - flProgressBarHeight);
+	
+	// Background bar
+	pDraw->AddRectFilled(
+		vProgressPos,
+		ImVec2(vProgressPos.x + flProgressBarWidth, vProgressPos.y + flProgressBarHeight),
+		ImColor(60, 60, 60, static_cast<int>(255 * flAnimProgress)),
+		1.f);
+	
+	// Progress bar
+	pDraw->AddRectFilled(
+		vProgressPos,
+		ImVec2(vProgressPos.x + flProgressBarWidth * smoothProgress, vProgressPos.y + flProgressBarHeight),
+		tAccent,
+		1.f);
 
 	PopFont();
 }

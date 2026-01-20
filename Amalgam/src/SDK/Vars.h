@@ -180,6 +180,7 @@ namespace Vars
 		CVar(BindWindowTitle, "Bind window title", true);
 		CVar(MenuShowsBinds, "Menu shows binds", false, NOBIND);
 		CVar(Watermark, "Watermark", true, VISUAL);
+		CVar(MediaPlayer, "Media player", true, VISUAL);
 
 		CVarEnum(Indicators, "Indicators", 0b00000, VISUAL | DROPDOWN_MULTI, nullptr,
 			VA_LIST("Ticks", "Crit hack", "Spectators", "Ping", "Conditions", "Seed prediction"),
@@ -538,10 +539,10 @@ namespace Vars
 			CVar(ScoreboardUtility, "Scoreboard utility", false);
 			CVar(ScoreboardColors, "Scoreboard colors", false, VISUAL);
 			CVar(CleanScreenshots, "Clean screenshots", true);
-			CVar(VelocityIndicator, "Velocity indicator", false, VISUAL);
+			CVar(VelocityIndicator, "Velocity indicator", true, VISUAL);
 			CVar(VelocityTakeoff, "Velocity takeoff", true, VISUAL);
 			CVar(VelocityPos, "Velocity position", 100, VISUAL | SLIDER_CLAMP, 50, 500, 10);
-			CVar(KeybindIndicator, "Keybind indicator", false, VISUAL);
+			CVar(KeybindIndicator, "Keybind indicator", true, VISUAL);
 			CVar(KeybindPos, "Keybind position", 130, VISUAL | SLIDER_CLAMP, 50, 500, 10);
 		SUBNAMESPACE_END(UI);
 
@@ -608,8 +609,8 @@ namespace Vars
 
 		SUBNAMESPACE_BEGIN(World)
 			CVarEnum(Modulations, "Modulations", 0b00000, VISUAL | DROPDOWN_MULTI, nullptr,
-				VA_LIST("World", "Sky", "Prop", "Particle", "Fog"),
-				World = 1 << 0, Sky = 1 << 1, Prop = 1 << 2, Particle = 1 << 3, Fog = 1 << 4);
+				VA_LIST("World", "Sky", "Prop", "Particle", "Fog", "Rain", "Snow", "Storm", "Sandstorm", "Ash"),
+				World = 1 << 0, Sky = 1 << 1, Prop = 1 << 2, Particle = 1 << 3, Fog = 1 << 4, Rain = 1 << 5, Snow = 1 << 6, Storm = 1 << 7, Sandstorm = 1 << 8, Ash = 1 << 9);
 			CVarValues(SkyboxChanger, "Skybox changer", std::string("Off"), VISUAL | DROPDOWN_CUSTOM, nullptr,
 				VA_LIST("Off"));
 			CVarValues(WorldTexture, "World texture", std::string("Default"), VISUAL | DROPDOWN_CUSTOM, nullptr,
@@ -722,6 +723,9 @@ namespace Vars
 			CVar(ShieldTurnRate, "Shield turn rate", false);
 			CVar(EdgeBug, "Edge bug", false);
 			CVar(EdgeBugLockTicks, "Edge bug lock ticks", 10, SLIDER_CLAMP, 1, 22);
+			CVar(EdgeBugAdvancedSearch, "Edge bug advanced search", false);
+			CVar(EdgeBugMouseLock, "Edge bug mouse lock", false);
+			CVar(EdgeBugAutoStrafe, "Edge bug auto strafe", false);
 			CVar(LongJump, "Long jump", false);
 			CVar(MiniJump, "Mini jump", false);
 			CVar(MiniJumpHoldDuck, "Mini jump hold duck", false);

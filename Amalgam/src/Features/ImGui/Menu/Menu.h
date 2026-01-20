@@ -18,6 +18,7 @@ class CMenu
 private:
 	void DrawMenu();
 	void DrawWatermark();
+	void DrawMediaPlayer();
 
 	void MenuAimbot(int iTab);
 	void MenuVisuals(int iTab);

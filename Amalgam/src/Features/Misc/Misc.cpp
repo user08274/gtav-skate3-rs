@@ -53,8 +53,6 @@ void CMisc::RunPost(CTFPlayer* pLocal, CUserCmd* pCmd, bool pSendPacket)
 	}
 }
 
-
-
 void CMisc::AutoJump(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	if (!Vars::Misc::Movement::Bunnyhop.Value)
@@ -635,31 +633,156 @@ bool CMisc::EdgeBugCheck(CTFPlayer* pLocal, CUserCmd* pCmd)
 	Vec3 vCurrentVelocity = pLocal->m_vecVelocity();
 
 	// Check 1: Was falling fast and velocity reset to first-tick gravity value
-	if (m_vEdgeBugVelocityBackup.z < -flGravityVel && 
+	if (m_vEdgeBugVelocityBackup.z < -flGravityVel &&
 		roundf(vCurrentVelocity.z) == -roundf(flGravityVel))
 	{
 		return true;
 	}
 
 	// Check 2: Was falling and velocity increased but still negative (edge scrape)
-	if (m_vEdgeBugVelocityBackup.z < -6.0f && 
+	if (m_vEdgeBugVelocityBackup.z < -6.0f &&
 		vCurrentVelocity.z > m_vEdgeBugVelocityBackup.z &&
 		vCurrentVelocity.z < -6.0f)
 	{
 		float flVelocityBeforePrediction = vCurrentVelocity.z;
-		
-		// Run one more prediction tick
+
+		// Run one more prediction tick to verify
 		F::EnginePrediction.Simulate(pLocal, pCmd);
 
 		float flGravityVelocityConstant = roundf(-flGravity * TICK_INTERVAL + flVelocityBeforePrediction);
 
 		if (flGravityVelocityConstant == roundf(pLocal->m_vecVelocity().z))
 		{
-			return true;
+			// Additional check: verify we're near a surface
+			CGameTrace trace = {};
+			CTraceFilterWorldAndPropsOnly filter = {};
+			Vec3 vOrigin = pLocal->m_vecOrigin();
+			vOrigin.z += 200.f; // Check above player
+
+			// Radial trace to find nearby surfaces
+			const float flStep = PI * 2.f / 16.f;
+			for (float a = 0; a < PI * 2.f; a += flStep)
+			{
+				Vec3 vStart(32.f * cosf(a) + vOrigin.x, 32.f * sinf(a) + vOrigin.y, vOrigin.z);
+				Vec3 vEnd = vStart - Vec3(0, 0, 300);
+
+				SDK::Trace(vStart, vEnd, MASK_PLAYERSOLID, &filter, &trace);
+
+				if (trace.fraction != 1.f && trace.plane.normal.z < 0.6f)
+				{
+					return true;
+				}
+			}
 		}
 	}
 
 	return false;
+}
+
+// Movement correction for silent edgebug
+void CMisc::CorrectMovement(CUserCmd* pCmd, Vec3 vWishAngle, Vec3 vOldAngles)
+{
+	if (vOldAngles.x == vWishAngle.x && vOldAngles.y == vWishAngle.y && vOldAngles.z == vWishAngle.z)
+		return;
+
+	Vec3 vWishForward, vWishRight, vWishUp;
+	Vec3 vCmdForward, vCmdRight, vCmdUp;
+
+	Vec3 vMoveData(pCmd->forwardmove, pCmd->sidemove, pCmd->upmove);
+
+	Math::AngleVectors(vWishAngle, &vWishForward, &vWishRight, &vWishUp);
+	Math::AngleVectors(vOldAngles, &vCmdForward, &vCmdRight, &vCmdUp);
+
+	// Normalize
+	float flWishForwardLen = sqrtf(vWishForward.x * vWishForward.x + vWishForward.y * vWishForward.y);
+	float flWishRightLen = sqrtf(vWishRight.x * vWishRight.x + vWishRight.y * vWishRight.y);
+	float flWishUpLen = sqrtf(vWishUp.z * vWishUp.z);
+
+	Vec3 vWishForwardNorm(vWishForward.x / flWishForwardLen, vWishForward.y / flWishForwardLen, 0.f);
+	Vec3 vWishRightNorm(vWishRight.x / flWishRightLen, vWishRight.y / flWishRightLen, 0.f);
+	Vec3 vWishUpNorm(0.f, 0.f, vWishUp.z / flWishUpLen);
+
+	float flCmdForwardLen = sqrtf(vCmdForward.x * vCmdForward.x + vCmdForward.y * vCmdForward.y);
+	float flCmdRightLen = sqrtf(vCmdRight.x * vCmdRight.x + vCmdRight.y * vCmdRight.y);
+	float flCmdUpLen = sqrtf(vCmdUp.z * vCmdUp.z);
+
+	Vec3 vCmdForwardNorm(vCmdForward.x / flCmdForwardLen, vCmdForward.y / flCmdForwardLen, 0.f);
+	Vec3 vCmdRightNorm(vCmdRight.x / flCmdRightLen, vCmdRight.y / flCmdRightLen, 0.f);
+	Vec3 vCmdUpNorm(0.f, 0.f, vCmdUp.z / flCmdUpLen);
+
+	// Calculate corrected movement
+	Vec3 vCorrectMove;
+	vCorrectMove.x = vCmdForwardNorm.x * (vWishForwardNorm.x * vMoveData.x + vWishRightNorm.x * vMoveData.y) +
+		vCmdForwardNorm.y * (vWishForwardNorm.y * vMoveData.x + vWishRightNorm.y * vMoveData.y);
+
+	vCorrectMove.y = vCmdRightNorm.x * (vWishForwardNorm.x * vMoveData.x + vWishRightNorm.x * vMoveData.y) +
+		vCmdRightNorm.y * (vWishForwardNorm.y * vMoveData.x + vWishRightNorm.y * vMoveData.y);
+
+	vCorrectMove.z = vCmdUpNorm.z * vWishUpNorm.z * vMoveData.z;
+
+	// Clamp
+	vCorrectMove.x = std::clamp(vCorrectMove.x, -450.f, 450.f);
+	vCorrectMove.y = std::clamp(vCorrectMove.y, -450.f, 450.f);
+	vCorrectMove.z = std::clamp(vCorrectMove.z, -320.f, 320.f);
+
+	pCmd->forwardmove = vCorrectMove.x;
+	pCmd->sidemove = vCorrectMove.y;
+	pCmd->upmove = vCorrectMove.z;
+}
+
+// Auto strafe for edgebug search
+void CMisc::AutoStrafeEdgeBug(CUserCmd* pCmd, CTFPlayer* pLocal)
+{
+	static float flSide = 1.f;
+	flSide = -flSide;
+
+	Vec3 vVelocity = pLocal->m_vecVelocity();
+	Vec3 vWishAngle = pCmd->viewangles;
+
+	float flSpeed = vVelocity.Length2D();
+	float flIdealStrafe = std::clamp(RAD2DEG(atanf(15.f / flSpeed)), 0.f, 90.f);
+
+	pCmd->forwardmove = 0.f;
+
+	static auto cl_sidespeed = H::ConVars.FindVar("cl_sidespeed");
+	float flSideSpeed = cl_sidespeed ? cl_sidespeed->GetFloat() : 450.f;
+
+	static float flOldYaw = 0.f;
+	float flYawDelta = remainderf(vWishAngle.y - flOldYaw, 360.f);
+	float flAbsYawDelta = fabsf(flYawDelta);
+	flOldYaw = vWishAngle.y;
+
+	if (flAbsYawDelta <= flIdealStrafe || flAbsYawDelta >= 30.f)
+	{
+		Vec3 vVelocityDir = Math::VectorAngles(vVelocity);
+		float flVelocityDelta = remainderf(vWishAngle.y - vVelocityDir.y, 360.f);
+		float flRetrack = std::clamp(RAD2DEG(atanf(30.f / flSpeed)), 0.f, 90.f) * 2.f;
+
+		if (flVelocityDelta <= flRetrack || flSpeed <= 15.f)
+		{
+			if (-flRetrack <= flVelocityDelta || flSpeed <= 15.f)
+			{
+				vWishAngle.y += flSide * flIdealStrafe;
+				pCmd->sidemove = flSideSpeed * flSide;
+			}
+			else
+			{
+				vWishAngle.y = vVelocityDir.y - flRetrack;
+				pCmd->sidemove = flSideSpeed;
+			}
+		}
+		else
+		{
+			vWishAngle.y = vVelocityDir.y + flRetrack;
+			pCmd->sidemove = -flSideSpeed;
+		}
+
+		CorrectMovement(pCmd, vWishAngle, pCmd->viewangles);
+	}
+	else if (flYawDelta > 0.f)
+		pCmd->sidemove = -flSideSpeed;
+	else
+		pCmd->sidemove = flSideSpeed;
 }
 
 void CMisc::EdgeBugPostPrediction(CTFPlayer* pLocal, CUserCmd* pCmd)
@@ -669,6 +792,7 @@ void CMisc::EdgeBugPostPrediction(CTFPlayer* pLocal, CUserCmd* pCmd)
 		m_bEdgeBugDetected = false;
 		m_iEdgeBugLockTicks = 0;
 		m_iEdgeBugCurrentTick = 0;
+		m_iEdgeBugSearchMode = 0;
 		return;
 	}
 
@@ -678,89 +802,262 @@ void CMisc::EdgeBugPostPrediction(CTFPlayer* pLocal, CUserCmd* pCmd)
 		m_bEdgeBugDetected = false;
 		m_iEdgeBugLockTicks = 0;
 		m_iEdgeBugCurrentTick = 0;
+		m_iEdgeBugSearchMode = 0;
 		return;
 	}
 
-	// Search for edgebug
-	if (!m_bEdgeBugDetected) {
-		auto backup_buttons = pCmd->buttons;
-		float backup_forward = pCmd->forwardmove;
-		float backup_side = pCmd->sidemove;
-		
-		for (int duck = 0; duck < 2; duck++) {
+	// Backup original command
+	int iBackupButtons = pCmd->buttons;
+	float flBackupForward = pCmd->forwardmove;
+	float flBackupSide = pCmd->sidemove;
+	Vec3 vBackupAngles = pCmd->viewangles;
+
+	// Calculate smooth angle delta
+	static Vec3 vLastAngle = vBackupAngles;
+	Vec3 vAngleDelta = (vBackupAngles - vLastAngle);
+	// Clamp angle delta to prevent huge jumps
+	vAngleDelta.y = std::clamp(vAngleDelta.y, -(180.f / 128.f), 180.f / 128.f);
+	vAngleDelta *= 0.5f;
+	vLastAngle = vBackupAngles;
+
+	// Static variables for strafe tracking
+	static Vec3 vLastStrafeAngles = vBackupAngles;
+	static float flLastStrafeForward = flBackupForward;
+	static float flLastStrafeSide = flBackupSide;
+	static bool bAppliedStrafeLast = false;
+
+	if (!bAppliedStrafeLast)
+	{
+		// Update strafe data only if we didn't strafe last time
+		vLastStrafeAngles = vBackupAngles;
+		flLastStrafeForward = flBackupForward;
+		flLastStrafeSide = flBackupSide;
+	}
+	bAppliedStrafeLast = false;
+
+	// Advanced search - только если включен
+	if (!m_bEdgeBugDetected && Vars::Misc::Movement::EdgeBugAdvancedSearch.Value)
+	{
+		static int iLastSuccessMode = 0;
+		int iSearchModes = 6; // ������ advanced search
+
+		for (int iMode = 0; iMode < iSearchModes; iMode++)
+		{
 			if (m_bEdgeBugDetected)
 				break;
-				
+
+			// Try last successful mode first
+			int iCurrentMode = iMode;
+			if (iLastSuccessMode && iMode == 0)
+			{
+				iCurrentMode = iLastSuccessMode;
+				iLastSuccessMode = 0;
+			}
+
+			// Skip duck modes if already ducking
+			if ((iBackupButtons & IN_DUCK) && iCurrentMode < 2)
+				continue;
+
 			RestoreEntityToPredicted();
 
-			if (duck)
-				pCmd->buttons |= IN_DUCK;
-			else
-				pCmd->buttons &= ~IN_DUCK;
-			
-			// Simulate with zero movement (same as what we'll do when locked)
-			pCmd->forwardmove = 0.f;
-			pCmd->sidemove = 0.f;
+			// Reset to backup
+			pCmd->viewangles = vLastStrafeAngles;
+			pCmd->forwardmove = flLastStrafeForward;
+			pCmd->sidemove = flLastStrafeSide;
+			pCmd->buttons = iBackupButtons;
 
-			for (int ticks = 0; ticks < 36; ticks++) {
+			Vec3 vCurrentAngle = vLastStrafeAngles;
+			bool bApplyStrafe = !(iCurrentMode % 2); // modes 0, 2, 4
+			bool bApplyDuck = iCurrentMode > 1;
 
-				if (pLocal->m_fFlags() & FL_ONGROUND)
+			// Predict up to 64 ticks
+			for (int iTick = 0; iTick < 64; iTick++)
+			{
+				if (m_bEdgeBugDetected || pLocal->m_fFlags() & FL_ONGROUND || pLocal->m_vecVelocity().z > 0.f)
 					break;
 
-				// Save origin for this tick
-				m_EdgeBugCmds[ticks].origin = pLocal->m_vecOrigin();
-				m_EdgeBugCmds[ticks].buttons = pCmd->buttons;
+				// Apply duck
+				if (bApplyDuck)
+					pCmd->buttons |= IN_DUCK;
+				else
+					pCmd->buttons &= ~IN_DUCK;
 
+				// Apply movement based on mode
+				if (iCurrentMode < 2)
+				{
+					// Modes 0-1: Still
+					pCmd->forwardmove = 0.f;
+					pCmd->sidemove = 0.f;
+				}
+				else if (iCurrentMode < 4)
+				{
+					// Modes 2-3: Movement with angle delta
+					pCmd->forwardmove = flLastStrafeForward;
+					pCmd->sidemove = flLastStrafeSide;
+
+					if (bApplyStrafe && fabsf(vCurrentAngle.y - vBackupAngles.y) < 179.f)
+					{
+						vCurrentAngle = vCurrentAngle + vAngleDelta;
+						Math::ClampAngles(vCurrentAngle);
+						pCmd->viewangles = vCurrentAngle;
+					}
+				}
+				else
+				{
+					// Modes 4-5: Autostrafe - только если включен
+					if (Vars::Misc::Movement::EdgeBugAutoStrafe.Value)
+						AutoStrafeEdgeBug(pCmd, pLocal);
+					else
+					{
+						pCmd->forwardmove = 0.f;
+						pCmd->sidemove = 0.f;
+					}
+				}
+
+				// Store command for this tick
+				m_EdgeBugCmds[iTick].viewangles = pCmd->viewangles;
+				m_EdgeBugCmds[iTick].forwardmove = pCmd->forwardmove;
+				m_EdgeBugCmds[iTick].sidemove = pCmd->sidemove;
+				m_EdgeBugCmds[iTick].buttons = pCmd->buttons;
+				m_EdgeBugCmds[iTick].origin = pLocal->m_vecOrigin();
+
+				// Backup velocity before prediction
+				Vec3 vPrePredVelocity = pLocal->m_vecVelocity();
+
+				// Simulate
 				F::EnginePrediction.Simulate(pLocal, pCmd);
 
-				m_vEdgeBugPredictedVelocity = pLocal->m_vecVelocity();
+				Vec3 vPostPredVelocity = pLocal->m_vecVelocity();
+				m_vEdgeBugPredictedVelocity = vPostPredVelocity;
 
-				if (EdgeBugCheck(pLocal, pCmd)) {
+				// Advanced edgebug detection
+				float flVelocityDiff = vPrePredVelocity.z - vPostPredVelocity.z;
+				Vec3 vVelocityAngleDelta = Math::VectorAngles(vPostPredVelocity) - Math::VectorAngles(vPrePredVelocity);
+				Math::ClampAngles(vVelocityAngleDelta);
+
+				// Check 1: Velocity increased while falling (edge scrape)
+				bool bVelocityIncreased = floorf(vPostPredVelocity.z) > floorf(vPrePredVelocity.z) &&
+					vPrePredVelocity.z < 0.f &&
+					vPostPredVelocity.z < 0.f &&
+					vPrePredVelocity.z * 0.25f > flVelocityDiff &&
+					fabsf(vVelocityAngleDelta.y) < 45.f;
+
+				// Check 2: Horizontal velocity increased (edge push)
+				float flPreHorizSpeed = vPrePredVelocity.Length2D();
+				float flPostHorizSpeed = vPostPredVelocity.Length2D();
+				bool bHorizontalIncrease = flPostHorizSpeed > flPreHorizSpeed;
+
+				// Check 3: Standard gravity reset check
+				bool bGravityReset = EdgeBugCheck(pLocal, pCmd);
+
+				// Detect edgebug
+				if ((bVelocityIncreased && bHorizontalIncrease) || bGravityReset)
+				{
 					m_bEdgeBugDetected = true;
-					m_iEdgeBugLockTicks = ticks;
-					m_iEdgeBugPredictTick = ticks;
+					m_iEdgeBugLockTicks = iTick;
+					m_iEdgeBugPredictTick = iTick;
 					m_iEdgeBugCurrentTick = 0;
-					m_bEdgeBugDuck = duck;
-					
+					m_iEdgeBugSearchMode = iCurrentMode;
+					m_bEdgeBugDuck = bApplyDuck;
+					m_iEdgeBugPredictionTimestamp = I::GlobalVars->tickcount;
+					m_vEdgeBugOriginalAngles = vBackupAngles;
+					m_flEdgeBugOriginalForward = flBackupForward;
+					m_flEdgeBugOriginalSide = flBackupSide;
+					iLastSuccessMode = iCurrentMode;
+
+					// If we used strafe, mark it
+					if (bApplyStrafe && iCurrentMode >= 2)
+					{
+						bAppliedStrafeLast = true;
+						vLastStrafeAngles = vCurrentAngle;
+						flLastStrafeForward = pCmd->forwardmove;
+						flLastStrafeSide = pCmd->sidemove;
+					}
+
 					break;
 				}
+
+				// Update backup velocity for next iteration
+				m_vEdgeBugVelocityBackup = vPostPredVelocity;
 
 				if (pLocal->m_fFlags() & FL_ONGROUND)
 					break;
 			}
+
+			// Restore
+			pCmd->viewangles = vBackupAngles;
+			pCmd->forwardmove = flBackupForward;
+			pCmd->sidemove = flBackupSide;
+			pCmd->buttons = iBackupButtons;
 		}
-		
-		pCmd->buttons = backup_buttons;
-		pCmd->forwardmove = backup_forward;
-		pCmd->sidemove = backup_side;
 	}
-	
-	// Apply lock if edgebug detected
-	if (m_bEdgeBugDetected) {
+
+	// Execute edgebug
+	if (m_bEdgeBugDetected)
+	{
+		RestoreEntityToPredicted();
+
 		m_iEdgeBugCurrentTick++;
-		
-		if (m_iEdgeBugCurrentTick > m_iEdgeBugLockTicks) {
-			// Edgebug completed successfully
+
+		// Check if we're done
+		if (m_iEdgeBugCurrentTick > m_iEdgeBugLockTicks)
+		{
 			I::ClientModeShared->m_pChatElement->ChatPrintf(0, "\x07" "AF96FF" "Aletherium \x07" "FFFFFF" "| Edgebug");
-			m_bEdgeBugDuck = false;
 			m_bEdgeBugDetected = false;
 			m_iEdgeBugCurrentTick = 0;
+			m_iEdgeBugSearchMode = 0;
+			bAppliedStrafeLast = false;
 			return;
 		}
 
-		if (m_bEdgeBugDuck)
-			pCmd->buttons |= IN_DUCK;
-		else
-			pCmd->buttons &= ~IN_DUCK;
+		// Check distance to predicted origin
+		int iCmdIndex = m_iEdgeBugCurrentTick - 1;
+		if (iCmdIndex >= 0 && iCmdIndex < 64)
+		{
+			Vec3 vCurrentOrigin = pLocal->m_vecOrigin();
+			float flDist = vCurrentOrigin.DistTo(m_EdgeBugCmds[iCmdIndex].origin);
 
-		pCmd->forwardmove = 0.f;
-		pCmd->sidemove = 0.f;
+			// If too far from predicted path, reset
+			if (flDist > 1.f)
+			{
+				m_bEdgeBugDetected = false;
+				m_iEdgeBugCurrentTick = 0;
+				m_iEdgeBugSearchMode = 0;
+				bAppliedStrafeLast = false;
+				return;
+			}
+
+			// Apply stored command
+			pCmd->buttons = m_EdgeBugCmds[iCmdIndex].buttons;
+			pCmd->forwardmove = m_EdgeBugCmds[iCmdIndex].forwardmove;
+			pCmd->sidemove = m_EdgeBugCmds[iCmdIndex].sidemove;
+
+			// Silent mode - correct movement but keep visual angles
+			Vec3 vTargetAngles = m_EdgeBugCmds[iCmdIndex].viewangles;
+
+			// For modes with angle changes (2, 3, 4, 5), apply silent correction - ������ ��������
+			if (m_iEdgeBugSearchMode >= 2)
+			{
+				CorrectMovement(pCmd, vTargetAngles, vBackupAngles);
+				// Keep original angles for visual (silent)
+				pCmd->viewangles = vBackupAngles;
+				G::PSilentAngles = true;
+			}
+			else
+			{
+				// For still modes or if silent disabled, just apply angles normally
+				pCmd->viewangles = vTargetAngles;
+			}
+
+			// Store for smooth interpolation
+			m_vEdgeBugTargetAngles = vTargetAngles;
+		}
 	}
 }
 
 void CMisc::EdgeBugMouseLock(float& x, float& y)
 {
-	if (!Vars::Misc::Movement::EdgeBug.Value)
+	if (!Vars::Misc::Movement::EdgeBug.Value || !Vars::Misc::Movement::EdgeBugMouseLock.Value)
 		return;
 
 	auto pLocal = H::Entities.GetLocal();
@@ -769,16 +1066,32 @@ void CMisc::EdgeBugMouseLock(float& x, float& y)
 
 	if (m_bEdgeBugDetected && m_iEdgeBugLockTicks > 0)
 	{
-		x = 0.f;
-		y = 0.f;
+		// Calculate mouse lock strength based on remaining ticks
+		int iRemainingTicks = m_iEdgeBugPredictionTimestamp + m_iEdgeBugPredictTick - I::GlobalVars->tickcount;
+
+		if (iRemainingTicks > 0 && x != 0.0f)
+		{
+			// Progressive mouse dampening - stronger as we get closer to edgebug
+			float flProgress = static_cast<float>(iRemainingTicks) / static_cast<float>(m_iEdgeBugPredictTick);
+			float flDampening = 1.0f - (flProgress * 0.95f); // 95% reduction at start, 0% at end
+
+			// Store mouse offset for prediction accuracy
+			m_iEdgeBugMouseOffset = static_cast<int>(std::abs(x));
+
+			// Apply dampening
+			x *= flDampening;
+			y *= flDampening;
+		}
+		else
+		{
+			// Full lock when very close or past the edgebug point
+			x = 0.f;
+			y = 0.f;
+		}
 	}
 }
 
-void CMisc::Draw(CTFPlayer* pLocal)
-{
-}
-
-// Long Jump - duck after leaving ground for extended jump distance
+// Long Jump - duck for 2 ticks after leaving ground (CS:GO style)
 void CMisc::LongJump(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
 	if (!Vars::Misc::Movement::LongJump.Value)
@@ -787,22 +1100,45 @@ void CMisc::LongJump(CTFPlayer* pLocal, CUserCmd* pCmd)
 		return;
 	}
 
-	// Use pre-prediction flags to detect ground state before prediction
-	if (m_iPrePredictionFlags & FL_ONGROUND)
-		m_iLongJumpSavedTick = I::GlobalVars->tickcount;
+	if (!pLocal || !pLocal->IsAlive())
+		return;
 
-	// Duck for first few ticks after leaving ground
-	if (!(I::GlobalVars->tickcount - m_iLongJumpSavedTick > 2) && !(m_iPrePredictionFlags & FL_ONGROUND))
+	if (pLocal->m_MoveType() == MOVETYPE_LADDER || pLocal->m_MoveType() == MOVETYPE_NOCLIP)
+		return;
+
+	static int longjump_tick = 0;
+	static bool ljbool = false;
+
+	// Detect leaving ground - was on ground before prediction, now in air
+	if ((m_iPrePredictionFlags & FL_ONGROUND) && !(pLocal->m_fFlags() & FL_ONGROUND))
 	{
-		pCmd->buttons |= IN_DUCK;
+		pCmd->buttons |= IN_JUMP;
+		ljbool = true;
+		longjump_tick = I::GlobalVars->tickcount + 2;
+	}
+
+	if (ljbool)
+	{
 		m_bLongJumpDetected = true;
+
+		// Hold duck for 2 ticks after leaving ground
+		if (I::GlobalVars->tickcount < longjump_tick)
+		{
+			pCmd->buttons |= IN_DUCK;
+		}
+
+		// Reset after longjump_tick
+		if (I::GlobalVars->tickcount >= longjump_tick)
+		{
+			ljbool = false;
+			m_bLongJumpDetected = false;
+		}
 	}
 	else
 	{
 		m_bLongJumpDetected = false;
 	}
 }
-
 // Mini Jump - jump + duck on leaving ground for small hop
 void CMisc::MiniJump(CTFPlayer* pLocal, CUserCmd* pCmd)
 {
@@ -957,6 +1293,7 @@ void CMisc::PixelSurf(CTFPlayer* pLocal, CUserCmd* pCmd)
 	if (!m_bShouldPixelSurf)
 	{
 		int iBackupButtons = pCmd->buttons;
+		bool bFoundPixelSurf = false;
 		
 		// Try standing and ducking to find pixel surf
 		for (int i = 0; i < 2; i++)
@@ -984,19 +1321,29 @@ void CMisc::PixelSurf(CTFPlayer* pLocal, CUserCmd* pCmd)
 					// Found pixel surf while standing - don't need to duck
 					m_bShouldPixelSurf = false;
 					pCmd->buttons = iBackupButtons;
+					F::Misc.RestoreEntityToPredicted();
 					return;
 				}
 				
 				if (m_bShouldPixelSurf)
 				{
 					m_iPixelSurfTicks = I::GlobalVars->tickcount + z + 16;
-					iBackupButtons = pCmd->buttons;
+					bFoundPixelSurf = true;
+					// Keep the duck button that we set above (i == 1)
 					break;
 				}
 			}
+			
+			if (bFoundPixelSurf)
+				break;
 		}
 		
-		pCmd->buttons = iBackupButtons;
+		// Only restore buttons if we didn't find pixel surf
+		if (!bFoundPixelSurf)
+		{
+			pCmd->buttons = iBackupButtons;
+		}
+		
 		F::Misc.RestoreEntityToPredicted();
 	}
 	else
@@ -1009,4 +1356,9 @@ void CMisc::PixelSurf(CTFPlayer* pLocal, CUserCmd* pCmd)
 				m_bShouldPixelSurf = false;
 		}
 	}
+}
+
+void CMisc::Draw(CTFPlayer* pLocal)
+{
+	// Empty - EdgeBug drawing removed
 }

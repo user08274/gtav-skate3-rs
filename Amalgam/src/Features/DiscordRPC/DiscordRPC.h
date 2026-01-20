@@ -1,5 +1,6 @@
 #pragma once
 #include "../../Utils/Macros/Macros.h"
+#include "../../Globals/Globals.h"
 #include <Windows.h>
 #include <string>
 #include <chrono>

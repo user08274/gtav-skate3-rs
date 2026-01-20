@@ -1,5 +1,6 @@
 #include "DiscordRPC.h"
 #include "../../SDK/SDK.h"
+#include "../../Globals/Globals.h"
 #include <format>
 #include <vector>
 
@@ -184,7 +185,7 @@ void CDiscordRPC::UpdatePresence()
 
     std::string state = "Idle";
     std::string details = "Main Menu";
-    std::string largeImage = "tf2";
+    std::string largeImage = "https://media1.tenor.com/m/JH6re4Qi3kUAAAAC/hirasawa-yui.gif";
     std::string largeText = "Team Fortress 2";
     std::string smallImage;
     std::string smallText;
@@ -235,8 +236,14 @@ void CDiscordRPC::UpdatePresence()
                 currentPlayers++;
         }
 
-        details = m_sCurrentMap;
+        details = std::format("{} | {}", G::g_Username, m_sCurrentMap);
         state = std::format("{} | {}/{}", m_sCurrentClass, currentPlayers, maxPlayers);
+    }
+    else
+    {
+        // В главном меню показываем только имя пользователя
+        details = std::format("{} | Main Menu", G::g_Username);
+        state = "Idle";
     }
 
     // Формируем JSON

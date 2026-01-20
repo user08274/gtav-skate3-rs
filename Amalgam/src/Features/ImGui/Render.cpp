@@ -8,6 +8,7 @@
 #include "Fonts/Roboto/RobotoMedium.h"
 #include "Fonts/Roboto/RobotoBlack.h"
 #include "Menu/Menu.h"
+#include "../../../media_player.h"
 
 
 // #define USE_CUSTOM_GUI  // Disabled - using original menu
@@ -170,5 +171,6 @@ void CRender::Initialize(IDirect3DDevice9* pDevice)
 	LoadFonts();
 	LoadStyle();
 
-
+	// Set device for MediaPlayer (old simple way)
+	Update(pDevice);
 }

@@ -9,6 +9,7 @@
 #include "../Features/Visuals/Visuals.h"
 #include "../Features/DiscordRPC/DiscordRPC.h"
 #include "../SDK/Events/Events.h"
+#include "../../media_player.h"
 #include <Psapi.h>
 
 static inline std::string GetProcessName(DWORD dwProcessID)
@@ -120,6 +121,13 @@ void CCore::Load()
 	// Initialize Discord RPC
 	F::DiscordRPC.Initialize();
 
+	// Initialize Media Player (old simple way)
+	Initialize();
+
+	// Start your original threads
+	CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)GetNowPlayingInfoAndSaveAlbumArt, nullptr, 0, nullptr);
+	CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)UpdatePosition, nullptr, 0, nullptr);
+
 	SDK::Output("Aletherium", "Loaded", DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 }
 
@@ -148,6 +156,15 @@ void CCore::Unload()
 
 	// Shutdown Discord RPC
 	F::DiscordRPC.Shutdown();
+
+	// Cleanup Media Player (old simple way)
+	g_bMediaPlayerShouldExit = true;
+	Sleep(100); // Give thread time to exit
+	if (albumArtTexture)
+	{
+		albumArtTexture->Release();
+		albumArtTexture = nullptr;
+	}
 
 	G::Unload = true;
 	m_bFailed2 = !U::Hooks.Unload() || m_bFailed2;

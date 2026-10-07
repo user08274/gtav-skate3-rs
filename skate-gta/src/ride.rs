@@ -4,6 +4,7 @@
 use crate::{
     coords::{EntityAxes, Frame, GtaVec},
     edges::{EdgeFinder, EdgeSettings},
+    obstacles::{Obstacle, WallFinder, WallSettings},
     far::{FarField, FarSettings},
     terrain::{GroundProbe, PatchSettings, Patches},
 };
@@ -22,6 +23,28 @@ const FLOOR: RetailContactMaterial = RetailContactMaterial {
     restitution: 1.0,
 };
 
+/// Changes when any obstacle moves by a centimetre or more.
+fn fingerprint(obstacles: &[Obstacle]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |v: f32| {
+        h = (h ^ (v * 100.0).round() as i64 as u64).wrapping_mul(0x0100_0000_01b3);
+    };
+    for o in obstacles {
+        for v in [o.center.x, o.center.y, o.center.z] {
+            eat(v);
+        }
+        for a in o.axes {
+            for v in [a.x, a.y, a.z] {
+                eat(v);
+            }
+        }
+        for v in o.half {
+            eat(v);
+        }
+    }
+    h
+}
+
 pub struct Ride {
     /// Boxed: the gameplay state is far larger than a script fiber's stack.
     pub game: Box<Game>,
@@ -39,6 +62,13 @@ pub struct Ride {
     pub edges: EdgeFinder,
     /// Last ground the game refused (logged by the host; the old ground stays).
     pub world_error: Option<String>,
+    /// Walls from sideways rays, and entity boxes the host sets each frame.
+    pub walls: WallFinder,
+    pub find_walls: bool,
+    entities: Vec<Obstacle>,
+    /// Obstacles in the world the game has, and their fingerprint.
+    obstacles: Vec<Obstacle>,
+    obstacles_key: u64,
     /// Look for grindable edges at all (`GrindEdges`).
     pub grind_edges: bool,
     edges_given: u64,
@@ -83,6 +113,11 @@ impl Ride {
             edges: EdgeFinder::new(EdgeSettings::default()),
             grind_edges: true,
             world_error: None,
+            walls: WallFinder::new(WallSettings::default()),
+            find_walls: true,
+            entities: Vec::new(),
+            obstacles: Vec::new(),
+            obstacles_key: 0,
             edges_given: 0,
             grind_lines: Vec::new(),
         };
@@ -104,10 +139,23 @@ impl Ride {
         let centers = [self.deck_position(), self.hips_position()];
         // An empty sample (nothing under the board within reach) keeps the
         // last ground: the game cannot take a world without surfaces.
-        let found = self.patches.refresh(probe, &self.frame, &centers)
+        let resampled = self.patches.refresh(probe, &self.frame, &centers);
+        if self.find_walls {
+            self.walls.update(probe, self.deck_position());
+        }
+        let mut obstacles = if self.find_walls { self.walls.obstacles() } else { Vec::new() };
+        obstacles.extend(self.entities.iter().copied());
+        // Only what the board or the body can reach soon matters to the physics.
+        let (deck, hips) = (self.deck_position(), self.hips_position());
+        obstacles.retain(|o| o.distance(deck).min(o.distance(hips)) < 5.0);
+        let key = fingerprint(&obstacles);
+        let found = (resampled || key != self.obstacles_key)
             && self.patches.patches.iter().any(|p| !p.triangles.is_empty());
         if found {
-            let world = crate::terrain::world_of(&self.patches.patches);
+            let extra = crate::obstacles::triangles(&obstacles, &self.frame, FLOOR);
+            self.obstacles = obstacles;
+            self.obstacles_key = key;
+            let world = crate::terrain::world_of(&self.patches.patches, &extra);
             let game = &mut self.game;
             if let Err(error) = crate::bigstack::run(move || game.set_world(world)) {
                 self.world_error = Some(error);
@@ -140,6 +188,16 @@ impl Ride {
         self.grind_lines = lines;
         self.edges_given = self.edges.version;
         Ok(())
+    }
+
+    /// Entity boxes (vehicles, props, pedestrians) for the next world refresh.
+    pub fn set_entities(&mut self, boxes: Vec<Obstacle>) {
+        self.entities = boxes;
+    }
+
+    /// Obstacles in the game's current world, in GTA space.
+    pub fn obstacles(&self) -> &[Obstacle] {
+        &self.obstacles
     }
 
     /// The grind lines the game currently has, in GTA space.

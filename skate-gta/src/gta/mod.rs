@@ -3,6 +3,7 @@
 mod hud;
 mod natives;
 mod shv;
+mod entities;
 mod hook;
 mod skeleton;
 mod watch;
@@ -193,6 +194,9 @@ struct GtaProbe {
 impl GroundProbe for GtaProbe {
     fn down(&mut self, x: f32, y: f32, top: f32, bottom: f32) -> Option<f32> {
         n::probe(GtaVec::new(x, y, top), GtaVec::new(x, y, bottom), self.flags, self.ignore).map(|p| p.z)
+    }
+    fn toward(&mut self, from: GtaVec, to: GtaVec) -> Option<(GtaVec, GtaVec)> {
+        n::probe_with_normal(from, to, self.flags, self.ignore)
     }
 }
 
@@ -538,6 +542,8 @@ struct RideSession {
     poser: Option<Poser>,
     draw_body: bool,
     frames: u32,
+    entities: entities::Entities,
+    collide_entities: bool,
 }
 
 impl RideSession {
@@ -564,6 +570,7 @@ impl RideSession {
         let mut ride = ride;
         ride.game.set_low_camera(config.low_camera);
         ride.grind_edges = config.grind_edges;
+        ride.find_walls = config.collide_walls;
         let prop = if config.board_model.eq_ignore_ascii_case("none") { None } else { spawn_prop(config, ride.deck_position()) };
         if config.ped_freeze {
             n::freeze_entity_position(ped, true);
@@ -573,6 +580,8 @@ impl RideSession {
             n::set_entity_collision(ped, false, false);
         }
         n::set_ped_can_ragdoll(ped, false);
+        // The rider is driven by Skate 3: GTA's own capsule only shoved cars.
+        n::set_entity_collision(ped, false, false);
         let poser = if config.ped_pose {
             Poser::new(ped, config.pose_mode)
                 .inspect_err(|e| {
@@ -596,7 +605,18 @@ impl RideSession {
         if let Some(error) = &ride.hud_error {
             log(&format!("Skate 3 HUD unavailable: {error}"));
         }
-        let mut session = Self { ride, ped, prop, probe, cam, poser, draw_body, frames: 0 };
+        let mut session = Self {
+            ride,
+            ped,
+            prop,
+            probe,
+            cam,
+            poser,
+            draw_body,
+            frames: 0,
+            entities: Default::default(),
+            collide_entities: config.collide_entities,
+        };
         session.present(config);
         n::notify(&format!("SkateGTA {BUILD}: Skate 3 on"));
         Ok(session)
@@ -612,11 +632,26 @@ impl RideSession {
         }
         let elapsed = std::time::Duration::from_secs_f32(n::get_frame_time().clamp(0.0, 0.25));
         let pad = read_pad();
+        let peds = if self.collide_entities {
+            let (boxes, peds) = self.entities.gather(self.ped, self.prop, self.ride.hips_position());
+            self.ride.set_entities(boxes);
+            peds
+        } else {
+            Vec::new()
+        };
         self.ride.refresh_world(&mut self.probe)?;
         let had_hud = self.ride.hud.is_some();
         self.ride
             .advance_game(elapsed, 4, pad)
             .map_err(|e| format!("gameplay stopped: {e}"))?;
+        if !peds.is_empty() {
+            let velocity = self.ride.deck_axes().forward.scale(self.ride.game.board_speed());
+            let skater = [self.ride.deck_position(), self.ride.hips_position()];
+            let knocked = self.entities.knock(&peds, &skater, velocity);
+            if knocked > 0 {
+                log(&format!("Knocked over {knocked} pedestrian(s) ({} this ride)", self.entities.knocked_total));
+            }
+        }
         if let Some(error) = self.ride.world_error.take() {
             log(&format!("Ground sample skipped: {error}"));
         }
@@ -724,6 +759,12 @@ impl RideSession {
     }
 
     fn draw_debug(&self) {
+        for o in self.ride.obstacles() {
+            let c = o.corners();
+            for (a, b) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)] {
+                n::draw_line(c[a], c[b], [255, 80, 80, 160]);
+            }
+        }
         for line in self.ride.grind_lines() {
             for w in line.windows(2) {
                 let lift = GtaVec::new(0.0, 0.0, 0.02);

@@ -34,6 +34,8 @@ pub struct Config {
     pub ped_freeze: bool,
     pub hud: bool,
     pub grind_edges: bool,
+    pub collide_walls: bool,
+    pub collide_entities: bool,
     pub pose_mode: PoseMode,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
@@ -61,6 +63,8 @@ impl Default for Config {
             ped_freeze: true,
             hud: true,
             grind_edges: true,
+            collide_walls: true,
+            collide_entities: true,
             pose_mode: PoseMode::Hook,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
@@ -109,6 +113,10 @@ PedFreeze = 1
 ; (slow, logs which GTA code touches the bones); script = from the script
 ; only (GTA overwrites it)
 PedPoseMode = hook
+; Walls and building sides (sideways rays) are solid for the skater
+CollideWalls = 1
+; Vehicles, props and pedestrians are solid; pedestrians you hit fall over
+CollideEntities = 1
 ; Find curbs, ledges and step edges to grind (yellow lines with DebugDraw)
 GrindEdges = 1
 ; The original Skate 3 trick and score HUD (assets\\private\\hud)
@@ -173,6 +181,8 @@ impl Config {
                 "pedfreeze" => c.ped_freeze = flag()?,
                 "hud" => c.hud = flag()?,
                 "grindedges" => c.grind_edges = flag()?,
+                "collidewalls" => c.collide_walls = flag()?,
+                "collideentities" => c.collide_entities = flag()?,
                 "pedposemode" => c.pose_mode = match value.to_ascii_lowercase().as_str() {
                     "hook" => PoseMode::Hook,
                     "guard" => PoseMode::Guard,

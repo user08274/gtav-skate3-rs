@@ -18,6 +18,11 @@ use skate_core::{
 pub trait GroundProbe {
     /// First surface hit on the vertical segment from `top` down to `bottom`.
     fn down(&mut self, x: f32, y: f32, top: f32, bottom: f32) -> Option<f32>;
+
+    /// First surface hit on the segment `from` -> `to`: point and face normal.
+    fn toward(&mut self, _from: GtaVec, _to: GtaVec) -> Option<(GtaVec, GtaVec)> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -127,27 +132,48 @@ fn build_triangles(
     frame: &Frame,
     material: RetailContactMaterial,
 ) -> Vec<WorldTriangle> {
-    let point = |k: usize| frame.to_skate(samples[k].expect("faces use probed samples"));
-    let mut ids = Vec::with_capacity(faces.len());
-    let mut normals = Vec::with_capacity(faces.len());
+    let points: Vec<Vector3> = samples
+        .iter()
+        .map(|s| s.map_or(Vector3::new(0.0, 0.0, 0.0), |p| frame.to_skate(p)))
+        .collect();
+    let mut upward = Vec::with_capacity(faces.len());
     for face in faces {
-        let v = face.map(point);
+        if face.iter().any(|&k| samples[k].is_none()) {
+            continue;
+        }
+        let v = face.map(|k| points[k]);
         let ordered = upward_vertices(v);
         let face = if ordered[1].x == v[1].x && ordered[1].y == v[1].y && ordered[1].z == v[1].z {
             face
         } else {
             [face[0], face[2], face[1]]
         };
-        let [a, b, c] = face.map(point);
-        let e1 = Vector3::new(b.x - a.x, b.y - a.y, b.z - a.z);
-        let e2 = Vector3::new(c.x - a.x, c.y - a.y, c.z - a.z);
-        let n = Vector3::new(e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x);
-        let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
-        if !(len > 1e-9) || n.y <= 0.0 {
-            continue;
+        if normal(face.map(|k| points[k])).is_some_and(|n| n.y > 0.0) {
+            upward.push(face);
         }
-        ids.push(face);
-        normals.push(Vector3::new(n.x / len, n.y / len, n.z / len));
+    }
+    mesh_triangles(&points, &upward, material)
+}
+
+fn normal([a, b, c]: [Vector3; 3]) -> Option<Vector3> {
+    let e1 = Vector3::new(b.x - a.x, b.y - a.y, b.z - a.z);
+    let e2 = Vector3::new(c.x - a.x, c.y - a.y, c.z - a.z);
+    let n = Vector3::new(e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x);
+    let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
+    (len > 1e-9).then(|| Vector3::new(n.x / len, n.y / len, n.z / len))
+}
+
+/// Triangles of any orientation (normal = (b - a) x (c - a), facing out of
+/// a solid), with the shared-edge data described for `build_triangles`.
+pub fn mesh_triangles(points: &[Vector3], faces: &[[usize; 3]], material: RetailContactMaterial) -> Vec<WorldTriangle> {
+    let point = |k: usize| points[k];
+    let mut ids = Vec::with_capacity(faces.len());
+    let mut normals = Vec::with_capacity(faces.len());
+    for &face in faces {
+        if let Some(n) = normal(face.map(point)) {
+            ids.push(face);
+            normals.push(n);
+        }
     }
     let dot = |a: Vector3, b: Vector3| a.x * b.x + a.y * b.y + a.z * b.z;
     let cross = |a: Vector3, b: Vector3| {
@@ -258,11 +284,11 @@ pub fn upward_vertices(v: [Vector3; 3]) -> [Vector3; 3] {
 /// Static ground mesh with per-triangle bounds, as the original host builds
 /// its levels, so contact queries only visit triangles near each volume.
 pub fn world(patch: &Patch) -> BoardWorld {
-    world_of(std::slice::from_ref(patch))
+    world_of(std::slice::from_ref(patch), &[])
 }
 
-pub fn world_of(patches: &[Patch]) -> BoardWorld {
-    let triangles: Vec<_> = patches.iter().flat_map(|p| p.triangles.iter().copied()).collect();
+pub fn world_of(patches: &[Patch], extra: &[WorldTriangle]) -> BoardWorld {
+    let triangles: Vec<_> = patches.iter().flat_map(|p| p.triangles.iter().copied()).chain(extra.iter().copied()).collect();
     let Some(local_bounds) =
         Bounds::from_points(triangles.iter().flat_map(|t| t.triangle.vertices))
     else {

@@ -115,6 +115,44 @@ pub fn delete_entity(e: Entity) {
 pub fn set_entity_heading(e: Entity, heading: f32) {
     call!(0x8E2530AA8ADA980E, e, heading);
 }
+pub fn get_entity_model(e: Entity) -> u32 {
+    ret_i32(call!(0x9F47B058362C84B5, e)) as u32
+}
+/// Model bounding box (local min, max).
+pub fn get_model_dimensions(model: u32) -> (GtaVec, GtaVec) {
+    let (mut min, mut max) = (NVector3::default(), NVector3::default());
+    call!(0x03E8D3D5F549087A, model, &mut min as *mut NVector3, &mut max as *mut NVector3);
+    (GtaVec::new(min.x, min.y, min.z), GtaVec::new(max.x, max.y, max.z))
+}
+/// Right, forward, up axes and position.
+pub fn get_entity_matrix(e: Entity) -> [GtaVec; 4] {
+    let mut v = [NVector3::default(); 4];
+    let [f, r, u, p] = &mut v;
+    call!(0xECB2FC7235A7D137, e, f as *mut NVector3, r as *mut NVector3, u as *mut NVector3, p as *mut NVector3);
+    let g = |n: &NVector3| GtaVec::new(n.x, n.y, n.z);
+    [g(&v[1]), g(&v[0]), g(&v[2]), g(&v[3])]
+}
+pub fn is_entity_attached(e: Entity) -> bool {
+    ret_bool(call!(0xB346476EF1A64897, e))
+}
+pub fn is_entity_visible(e: Entity) -> bool {
+    ret_bool(call!(0x47D6F43D77935C75, e))
+}
+pub fn is_ped_ragdoll(ped: Entity) -> bool {
+    ret_bool(call!(0x47E4E977581C5B55, ped))
+}
+/// Knocks a ped over for `ms` milliseconds.
+pub fn set_ped_to_ragdoll(ped: Entity, ms: i32) {
+    call!(0xAE99FB955581844A, ped, ms, ms * 2, 0i32, false, false, false);
+}
+/// An impulse in world space at the entity's centre.
+pub fn push_entity(e: Entity, impulse: GtaVec) {
+    call!(
+        0xC5F68BE9613E2D18, e, 1i32, impulse.x, impulse.y, impulse.z, 0.0f32, 0.0f32, 0.0f32, 0i32, false, true, true, false,
+        true,
+    );
+}
+
 /// The entity's actual forward axis (its matrix, as drawn).
 pub fn get_entity_forward_vector(e: Entity) -> GtaVec {
     ret_vec(call!(0x0A794A5A57F8DF91, e))
@@ -241,6 +279,27 @@ pub fn probe(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<Gta
         &mut entity as *mut u64,
     ));
     (status == 2 && hit as u32 != 0).then(|| GtaVec::new(end.x, end.y, end.z))
+}
+
+/// Like `probe`, also returning the surface normal at the hit.
+pub fn probe_with_normal(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<(GtaVec, GtaVec)> {
+    let handle = ret_i32(call!(
+        0x377906D8A31E5586, from.x, from.y, from.z, to.x, to.y, to.z, flags, ignore, 7i32,
+    ));
+    let mut hit: u64 = 0;
+    let mut end = NVector3::default();
+    let mut normal = NVector3::default();
+    let mut entity: u64 = 0;
+    let status = ret_i32(call!(
+        0x3D87450E15D98694,
+        handle,
+        &mut hit as *mut u64,
+        &mut end as *mut NVector3,
+        &mut normal as *mut NVector3,
+        &mut entity as *mut u64,
+    ));
+    (status == 2 && hit as u32 != 0)
+        .then(|| (GtaVec::new(end.x, end.y, end.z), GtaVec::new(normal.x, normal.y, normal.z)))
 }
 
 fn text_component(text: &str) -> CString {

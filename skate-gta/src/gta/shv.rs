@@ -17,6 +17,9 @@ pub struct Api {
     native_call: unsafe extern "C" fn() -> *mut u64,
     handle_address: unsafe extern "C" fn(i32) -> *mut u8,
     create_texture: unsafe extern "C" fn(*const u8) -> i32,
+    world_vehicles: unsafe extern "C" fn(*mut i32, i32) -> i32,
+    world_peds: unsafe extern "C" fn(*mut i32, i32) -> i32,
+    world_objects: unsafe extern "C" fn(*mut i32, i32) -> i32,
     #[allow(clippy::type_complexity)]
     draw_texture: unsafe extern "C" fn(i32, i32, i32, i32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32),
 }
@@ -54,6 +57,9 @@ pub fn load() -> Result<&'static Api, &'static str> {
         native_call: resolve!(module, "?nativeCall@@YAPEA_KXZ"),
         handle_address: resolve!(module, "?getScriptHandleBaseAddress@@YAPEAEH@Z"),
         create_texture: resolve!(module, "?createTexture@@YAHPEBD@Z"),
+        world_vehicles: resolve!(module, "?worldGetAllVehicles@@YAHPEAHH@Z"),
+        world_peds: resolve!(module, "?worldGetAllPeds@@YAHPEAHH@Z"),
+        world_objects: resolve!(module, "?worldGetAllObjects@@YAHPEAHH@Z"),
         draw_texture: resolve!(module, "?drawTexture@@YAXHHHHMMMMMMMMMMMM@Z"),
     };
     Ok(API.get_or_init(|| api))
@@ -96,6 +102,27 @@ pub fn create_texture(path: &std::path::Path) -> Result<i32, String> {
     let mut bytes = text.as_bytes().to_vec();
     bytes.push(0);
     Ok(unsafe { (api().create_texture)(bytes.as_ptr()) })
+}
+
+#[derive(Clone, Copy)]
+pub enum Pool {
+    Vehicles,
+    Peds,
+    Objects,
+}
+
+/// Handles of every entity in a pool (ScriptHookV caps each at 4096).
+pub fn world_entities(pool: Pool) -> Vec<i32> {
+    let mut handles = vec![0i32; 4096];
+    let api = api();
+    let f = match pool {
+        Pool::Vehicles => api.world_vehicles,
+        Pool::Peds => api.world_peds,
+        Pool::Objects => api.world_objects,
+    };
+    let n = unsafe { f(handles.as_mut_ptr(), handles.len() as i32) }.clamp(0, handles.len() as i32);
+    handles.truncate(n as usize);
+    handles
 }
 
 /// One on-screen instance of a texture (see ScriptHookV's main.h).

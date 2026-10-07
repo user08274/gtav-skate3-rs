@@ -9,6 +9,7 @@ pub mod coords;
 pub mod edges;
 pub mod far;
 pub mod hash;
+pub mod obstacles;
 pub mod hud_draw;
 pub mod patch;
 pub mod png;

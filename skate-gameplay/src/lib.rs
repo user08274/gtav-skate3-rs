@@ -14,6 +14,7 @@ pub mod difficulty;
 pub mod graph_host;
 pub mod graph_runtime;
 pub mod host;
+pub mod hud;
 pub mod hud_runtime;
 pub mod grind_world;
 pub mod input;

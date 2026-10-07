@@ -244,6 +244,15 @@ impl Game {
         self.camera.set_camera_type(angle.graph_type());
     }
 
+    pub(crate) fn scoring(&self) -> &crate::scoring_runtime::Runtime {
+        &self.skater.scoring
+    }
+
+    /// The trick the scoring announced on the last tick, if any.
+    pub fn announced_trick(&self) -> Option<&str> {
+        self.skater.scoring.new_trick.then(|| self.skater.scoring.trick_name())
+    }
+
     /// Name of the stock camera shot the Skate 3 camera graph selected.
     pub fn camera_shot(&self) -> String {
         self.camera.selected_shot().to_string()

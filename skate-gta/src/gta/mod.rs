@@ -340,6 +340,21 @@ fn read_pad() -> [f32; 18] {
 /// Drives the player ped's skeleton with the Skate 3 pose.
 struct Poser {
     rig: crate::pose::Rig,
+    frames: std::cell::Cell<u32>,
+    written: std::cell::RefCell<Vec<crate::pose::BonePose>>,
+}
+
+const POSE_LOG_FRAMES: u32 = 4;
+
+fn largest_change(a: &[crate::pose::BonePose], b: &[crate::pose::BonePose]) -> f32 {
+    a.iter()
+        .zip(b)
+        .flat_map(|(x, y)| {
+            let d = |u: GtaVec, v: GtaVec| u.sub(v);
+            [d(x.position, y.position), d(x.axes[0], y.axes[0]), d(x.axes[1], y.axes[1]), d(x.axes[2], y.axes[2])]
+        })
+        .map(|v| v.x.abs().max(v.y.abs()).max(v.z.abs()))
+        .fold(0.0, f32::max)
 }
 
 impl Poser {
@@ -350,7 +365,8 @@ impl Poser {
             (i >= 0).then_some(i as usize)
         };
         let rig = crate::pose::Rig::new(skeleton.read(), skeleton.parents.clone(), index_of)?;
-        Ok(Self { rig })
+        log(&format!("Ped pose rig: {}", rig.describe()));
+        Ok(Self { rig, frames: Default::default(), written: Default::default() })
     }
 
     /// `origin`/`heading` are the transform just given to the ped.
@@ -366,7 +382,27 @@ impl Poser {
         };
         let joints: std::collections::HashMap<&str, GtaVec> =
             names.iter().zip(&view.bones).map(|(name, (p, _))| (name.as_str(), model(*p))).collect();
-        skeleton.write(&self.rig.solve(|name| joints.get(name).copied()));
+        let pose = self.rig.solve(|name| joints.get(name).copied());
+        let frame = self.frames.get();
+        if frame < POSE_LOG_FRAMES {
+            let live = skeleton.read();
+            let written = self.written.borrow();
+            let key = ["HIPS", "SPINE", "HEAD", "LEFTUPLEG", "RIGHTUPLEG", "LEFTARM", "LEFTFOREARM", "LEFTHAND"];
+            let targets: Vec<_> = key.iter().map(|k| format!("{k}={:?}", joints.get(k))).collect();
+            log(&format!(
+                "Ped pose frame {frame}: joints {} | game changed our last write by {:?} | live vs rest {:.3} | solved vs rest {:.3} | pelvis axes {:?}",
+                targets.join(" "),
+                (!written.is_empty()).then(|| largest_change(&live, &written)),
+                largest_change(&live, self.rig.rest()),
+                largest_change(&pose, self.rig.rest()),
+                pose.get(0..3).map(|p| p.iter().map(|b| b.position).collect::<Vec<_>>()),
+            ));
+            self.frames.set(frame + 1);
+        }
+        skeleton.write(&pose);
+        if self.frames.get() <= POSE_LOG_FRAMES {
+            *self.written.borrow_mut() = pose;
+        }
         Ok(())
     }
 }
@@ -459,7 +495,9 @@ impl RideSession {
             n::set_entity_quaternion(prop, q);
         }
         let origin = view.hips.add(GtaVec::new(0.0, 0.0, config.ped_z_offset - 1.0));
-        let heading = coords::heading_degrees(view.forward);
+        // The skater stands sideways on the deck; the retarget turns the hips,
+        // so the ped's own frame follows the board.
+        let heading = coords::heading_degrees(view.axes.forward);
         n::set_entity_coords_no_offset(self.ped, origin);
         n::set_entity_heading(self.ped, heading);
         if let Some(poser) = &self.poser {

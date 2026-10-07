@@ -176,6 +176,31 @@ impl Rig {
         self.rest.len()
     }
 
+    /// Diagnostic summary: resolved bones and a few rest positions.
+    pub fn describe(&self) -> String {
+        let p = |i: usize| self.rest[i].position;
+        let links: Vec<_> = LINKS
+            .iter()
+            .zip(&self.links)
+            .map(|(l, r)| format!("{}:{}", l.from, r.map_or("-".into(), |(a, b)| format!("{a}>{b}"))))
+            .collect();
+        format!(
+            "bones {} pelvis {} ({:?}) spine0 {} ({:?}) thighs {:?} links [{}] pelvis axes {:?}",
+            self.rest.len(),
+            self.pelvis,
+            p(self.pelvis),
+            self.spine0,
+            p(self.spine0),
+            (p(self.thighs.0), p(self.thighs.1)),
+            links.join(" "),
+            self.rest[self.pelvis].axes
+        )
+    }
+
+    pub fn rest(&self) -> &[BonePose] {
+        &self.rest
+    }
+
     /// Model-space pose for every bone. `joint` gives Skate 3 joint positions
     /// already in the ped's model space; missing joints leave bones at rest.
     pub fn solve(&self, joint: impl Fn(&str) -> Option<GtaVec>) -> Vec<BonePose> {

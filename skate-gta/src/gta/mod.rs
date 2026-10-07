@@ -365,6 +365,8 @@ impl RideSession {
             config.patch,
             &mut probe,
         )?;
+        let mut ride = ride;
+        ride.game.set_low_camera(config.low_camera);
         let prop = if config.debug_body { None } else { spawn_prop(config, ride.deck_position()) };
         n::freeze_entity_position(ped, true);
         n::set_ped_can_ragdoll(ped, false);
@@ -402,23 +404,21 @@ impl RideSession {
     }
 
     fn present(&mut self, config: &Config) {
-        let axes = self.ride.deck_axes();
-        let deck = self.ride.deck_position();
+        let view = self.ride.view();
         if let Some(prop) = self.prop {
-            let q = coords::quaternion_mul(coords::quaternion(&axes), coords::yaw_quaternion(config.model_yaw_offset));
-            n::set_entity_coords_no_offset(prop, deck.add(axes.up.scale(config.model_z_offset)));
+            let q = coords::quaternion_mul(coords::quaternion(&view.axes), coords::yaw_quaternion(config.model_yaw_offset));
+            n::set_entity_coords_no_offset(prop, view.deck.add(view.axes.up.scale(config.model_z_offset)));
             n::set_entity_quaternion(prop, q);
         }
-        let hips = self.ride.hips_position();
-        n::set_entity_coords_no_offset(self.ped, hips.add(GtaVec::new(0.0, 0.0, config.ped_z_offset - 1.0)));
-        n::set_entity_heading(self.ped, coords::heading_degrees(self.ride.skater_forward()));
-        if let (Some(cam), Some(view)) = (self.cam, self.ride.camera()) {
-            n::set_cam_coord(cam, view.position);
-            n::point_cam_at_coord(cam, view.position.add(view.forward.scale(10.0)));
-            n::set_cam_fov(cam, view.fov_degrees.clamp(10.0, 120.0));
+        n::set_entity_coords_no_offset(self.ped, view.hips.add(GtaVec::new(0.0, 0.0, config.ped_z_offset - 1.0)));
+        n::set_entity_heading(self.ped, coords::heading_degrees(view.forward));
+        if let (Some(cam), Some(camera)) = (self.cam, view.camera) {
+            n::set_cam_coord(cam, camera.position);
+            n::point_cam_at_coord(cam, camera.position.add(camera.forward.scale(10.0)));
+            n::set_cam_fov(cam, camera.fov_degrees.clamp(10.0, 120.0));
         }
         if config.debug_body {
-            self.draw_body();
+            self.draw_body(&view);
         }
         if config.debug_draw {
             self.draw_debug();
@@ -435,43 +435,36 @@ impl RideSession {
     }
 
     /// The Skate 3 skater and board as lines, in place of GTA models.
-    fn draw_body(&self) {
+    fn draw_body(&self, view: &crate::ride::View) {
         const BONE: [u8; 4] = [255, 255, 255, 255];
         const BOARD: [u8; 4] = [255, 170, 0, 255];
-        let game = &self.ride.game;
-        let names = game.bone_names();
-        let bones = game.skeleton_world();
+        let names = self.ride.game.bone_names();
         let body = |i: usize| {
             let name = names[i].as_str();
             name != "TRAJECTORY" && !name.ends_with("_REPARENTED") && !name.contains("WHEEL")
                 && !name.starts_with("TRUCK") && name != "SKATEBOARD_ROOT"
         };
-        for (i, &(p, parent)) in bones.iter().enumerate() {
+        for (i, &(p, parent)) in view.bones.iter().enumerate() {
             if parent < 0 || !body(i) || !body(parent as usize) {
                 continue;
             }
-            let q = bones[parent as usize].0;
-            n::draw_line(self.ride.frame.to_gta(p), self.ride.frame.to_gta(q), BONE);
+            n::draw_line(p, view.bones[parent as usize].0, BONE);
         }
-        let deck = self.ride.deck_position();
-        let axes = self.ride.deck_axes();
-        let [width, length] = game.deck_size();
-        let corner = |side: f32, end: f32| deck.add(axes.right.scale(side * width * 0.5)).add(axes.forward.scale(end * length * 0.5));
+        let axes = view.axes;
+        let [width, length] = self.ride.game.deck_size();
+        let corner = |side: f32, end: f32| view.deck.add(axes.right.scale(side * width * 0.5)).add(axes.forward.scale(end * length * 0.5));
         let outline = [corner(-1.0, -0.8), corner(-1.0, 0.8), corner(-0.5, 1.0), corner(0.5, 1.0),
             corner(1.0, 0.8), corner(1.0, -0.8), corner(0.5, -1.0), corner(-0.5, -1.0)];
         for i in 0..outline.len() {
             n::draw_line(outline[i], outline[(i + 1) % outline.len()], BOARD);
         }
-        let parts = game.board_parts();
-        let at = |id: BodyId| self.ride.frame.to_gta(parts[id.index()].translation);
-        for (a, b) in [(BodyId::RightFrontWheel, BodyId::LeftFrontWheel), (BodyId::RightBackWheel, BodyId::LeftBackWheel)] {
-            n::draw_line(at(a), at(b), BOARD);
-        }
-        for id in [BodyId::RightFrontWheel, BodyId::LeftFrontWheel, BodyId::RightBackWheel, BodyId::LeftBackWheel] {
-            let w = at(id);
+        let w = view.wheels;
+        n::draw_line(w[BodyId::RightFrontWheel.index()], w[BodyId::LeftFrontWheel.index()], BOARD);
+        n::draw_line(w[BodyId::RightBackWheel.index()], w[BodyId::LeftBackWheel.index()], BOARD);
+        for wheel in w {
             let r = 0.03;
-            n::draw_line(w.add(axes.forward.scale(-r)), w.add(axes.forward.scale(r)), BOARD);
-            n::draw_line(w.add(axes.up.scale(-r)), w.add(axes.up.scale(r)), BOARD);
+            n::draw_line(wheel.add(axes.forward.scale(-r)), wheel.add(axes.forward.scale(r)), BOARD);
+            n::draw_line(wheel.add(axes.up.scale(-r)), wheel.add(axes.up.scale(r)), BOARD);
         }
     }
 

@@ -16,6 +16,7 @@ pub struct Config {
     pub full_gameplay: bool,
     pub mode: skate_gameplay::host::Mode,
     pub skate_camera: bool,
+    pub low_camera: bool,
     pub debug_body: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
@@ -31,11 +32,12 @@ impl Default for Config {
             model_yaw_offset: 0.0,
             model_z_offset: 0.0,
             ped_z_offset: 1.0,
-            probe_flags: 1 | 16,
+            probe_flags: 1,
             debug_draw: true,
             full_gameplay: true,
             mode: skate_gameplay::host::Mode::Easy,
             skate_camera: true,
+            low_camera: false,
             debug_body: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
@@ -68,6 +70,8 @@ Gameplay = full
 Difficulty = easy
 ; Use the Skate 3 gameplay camera instead of the GTA camera
 SkateCamera = 1
+; Skate 3 Camera Angle: high or low
+CameraAngle = high
 ; Hide the GTA player and board model; draw the Skate 3 skeleton and board
 DebugBody = 1
 
@@ -76,8 +80,9 @@ PushForce = 40
 SteerAngle = 0.3
 InvertSteer = 0
 
-; Ground sampling around the board
-ProbeFlags = 17
+; Ground sampling around the board: 1 = map only, 17 = map + objects
+; (objects include street litter, which turns into bumps under the wheels)
+ProbeFlags = 1
 PatchCells = 8
 PatchSpacing = 0.4
 ";
@@ -118,6 +123,11 @@ impl Config {
                 "difficulty" => c.mode = skate_gameplay::host::Mode::parse(value)
                     .ok_or_else(|| err("must be easy, normal or hardcore"))?,
                 "skatecamera" => c.skate_camera = flag()?,
+                "cameraangle" => c.low_camera = match value.to_ascii_lowercase().as_str() {
+                    "low" => true,
+                    "high" => false,
+                    _ => return Err(err("must be high or low")),
+                },
                 "debugbody" => c.debug_body = flag()?,
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
@@ -150,7 +160,7 @@ mod tests {
     fn template_parses() {
         let c = Config::parse(TEMPLATE).unwrap();
         assert_eq!(c.toggle_key, 0x74);
-        assert_eq!(c.probe_flags, 17);
+        assert_eq!(c.probe_flags, 1);
         assert!(c.skate3rust_dir.is_some() && c.asset_root.is_none());
     }
 

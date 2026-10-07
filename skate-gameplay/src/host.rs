@@ -238,6 +238,12 @@ impl Game {
         self.camera.presentation_frame()
     }
 
+    /// Retail Camera Angle setting: true selects the low (classic) camera graph.
+    pub fn set_low_camera(&mut self, low: bool) {
+        let angle = if low { crate::camera::CameraAngle::Low } else { crate::camera::CameraAngle::High };
+        self.camera.set_camera_type(angle.graph_type());
+    }
+
     /// Name of the stock camera shot the Skate 3 camera graph selected.
     pub fn camera_shot(&self) -> String {
         self.camera.selected_shot().to_string()

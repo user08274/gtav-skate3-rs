@@ -27,6 +27,13 @@ impl GtaVec {
     pub fn scale(self, s: f32) -> Self {
         Self::new(self.x * s, self.y * s, self.z * s)
     }
+    pub fn lerp(self, o: Self, t: f32) -> Self {
+        self.add(o.sub(self).scale(t))
+    }
+    pub fn normalized(self) -> Self {
+        let l = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        if l > 1e-6 { self.scale(1.0 / l) } else { self }
+    }
 }
 
 pub fn dir_to_skate(v: GtaVec) -> Vector3 {
@@ -90,6 +97,7 @@ pub fn basis_for_heading(heading_degrees: f32) -> Basis3 {
 
 /// GTA entity axes for a skate part pose. Skate columns are `Ri, Up, At`;
 /// GTA entities use right (X), forward (Y), up (Z) with right x forward = up.
+#[derive(Clone, Copy, Debug)]
 pub struct EntityAxes {
     pub right: GtaVec,
     pub forward: GtaVec,

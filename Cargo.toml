@@ -1,0 +1,19 @@
+[workspace]
+members = ["skate-gta", "skate-gameplay", "bevy-shim"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+skate-core = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
+skate-data = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
+
+[profile.dev]
+opt-level = 3
+
+[profile.release]
+debug = 1

@@ -1,0 +1,25 @@
+[package]
+name = "skate-gta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "skate_gta"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+skate-core.workspace = true
+skate-data.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[dev-dependencies]
+serde_json = "1.0"

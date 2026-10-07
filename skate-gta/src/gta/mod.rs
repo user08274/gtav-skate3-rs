@@ -29,6 +29,9 @@ use windows_sys::Win32::{
     UI::Input::KeyboardAndMouse::GetAsyncKeyState,
 };
 
+/// Git commit the .asi was built from.
+const BUILD: &str = env!("SKATEGTA_BUILD");
+
 static MODULE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[unsafe(no_mangle)]
@@ -134,7 +137,7 @@ fn start(config: &Config, data: &mut Option<Collections>) -> Result<Active, Stri
 
 fn run() {
     let config = load_config();
-    log("SkateGTA loaded");
+    log(&format!("SkateGTA loaded (build {BUILD}, PedPoseMode {:?})", config.pose_mode));
     let mut data: Option<Collections> = None;
     let mut session: Option<Active> = None;
     let mut key_was_down = false;
@@ -557,7 +560,7 @@ impl RideSession {
         }
         let mut session = Self { ride, ped, prop, probe, cam, poser, draw_body };
         session.present(config);
-        n::notify("SkateGTA: Skate 3 on");
+        n::notify(&format!("SkateGTA {BUILD}: Skate 3 on"));
         Ok(session)
     }
 

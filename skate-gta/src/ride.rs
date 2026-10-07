@@ -3,6 +3,7 @@
 //! board and the skater, and GTA-space views of the results.
 use crate::{
     coords::{EntityAxes, Frame, GtaVec},
+    far::{FarField, FarSettings},
     terrain::{GroundProbe, PatchSettings, Patches},
 };
 use skate_core::{math::Basis3, physics::contact::RetailContactMaterial};
@@ -22,6 +23,7 @@ pub struct Ride {
     pub game: Box<Game>,
     pub frame: Frame,
     pub patches: Patches,
+    pub far: FarField,
 }
 
 pub struct CameraView {
@@ -42,7 +44,16 @@ impl Ride {
     ) -> Result<Self, String> {
         let game = crate::bigstack::run(|| Game::load(root, mode).map(Box::new))?;
         let frame = Frame::facing(ground.add(GtaVec::new(0.0, 0.0, -SPAWN_GROUND_HEIGHT)), heading_degrees);
-        let mut ride = Self { game, frame, patches: Patches::new(patch, FLOOR) };
+        let mut ride = Self { game, frame, patches: Patches::new(patch, FLOOR), far: FarField::new(FarSettings::default()) };
+        // Fill the whole far field once so the camera starts with full ground.
+        let side = 2 * ride.far.settings.radius_cells as usize + 1;
+        while ride.far.sample_count() < side * side {
+            let before = ride.far.sample_count();
+            ride.far.update(probe, ground);
+            if ride.far.sample_count() == before {
+                break;
+            }
+        }
         ride.refresh_world(probe)?;
         Ok(ride)
     }
@@ -55,6 +66,9 @@ impl Ride {
             let game = &mut self.game;
             crate::bigstack::run(move || game.set_world(world))?;
         }
+        self.far.update(probe, self.hips_position());
+        let queries = self.far.queries(self.frame, self.patches.rects());
+        self.game.set_external_queries(Some(std::sync::Arc::new(queries)));
         Ok(())
     }
 

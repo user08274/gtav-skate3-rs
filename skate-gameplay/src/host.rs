@@ -77,6 +77,7 @@ pub fn missing_files(root: &Path) -> Vec<&'static str> {
 const HIPS_PART: usize = 23;
 
 pub struct Game {
+    deck_size: [f32; 2],
     physics: GamePhysics,
     skater: SkaterRuntime,
     controls: PlayerControls,
@@ -107,7 +108,10 @@ impl Game {
         let skater = SkaterRuntime::load(root, &graphs, &physics, difficulty.profile_key())?;
         let controls = PlayerControls::load(root)?;
         let camera = CameraRuntime::load(root)?;
-        Ok(Self { physics, skater, controls, graphs, camera, accumulator: Duration::ZERO })
+        let data = skate_data::collections::Collections::load(root)?;
+        let deck = |field| data.float("physicsdeck", "default", field);
+        let deck_size = [deck("DeckWidth")?, deck("DeckMidLength")? + 2.0 * deck("DeckBackEndSize")?];
+        Ok(Self { deck_size, physics, skater, controls, graphs, camera, accumulator: Duration::ZERO })
     }
 
     /// Static collision near the skater, in skate space (metres, Y up), with
@@ -115,6 +119,14 @@ impl Game {
     /// only a placeholder until then.
     pub fn set_world(&mut self, world: BoardWorld) -> Result<(), String> {
         self.physics.replace_world(world)
+    }
+
+    /// Line-query source beyond the static world (cleared by `set_world`).
+    pub fn set_external_queries(
+        &mut self,
+        queries: Option<std::sync::Arc<dyn skate_core::physics::board_world::ExternalQueries>>,
+    ) {
+        self.physics.set_external_queries(queries);
     }
 
     pub fn tick_period(&self) -> Duration {
@@ -193,6 +205,30 @@ impl Game {
         &self.skater.render_pose
     }
 
+    /// Every animated bone in skate world space with its parent index (-1 for
+    /// roots), from the completed render pose.
+    pub fn skeleton_world(&self) -> Vec<(skate_core::math::Vector3, i32)> {
+        let root = self.skater.animated_skeleton.roots.animation_to_world;
+        let parents = &self.skater.animation.evaluator.frames.parents;
+        self.skater
+            .render_pose
+            .iter()
+            .zip(parents)
+            .map(|(m, &parent)| {
+                let p = m[3];
+                let world = core::array::from_fn::<f32, 3, _>(|r| {
+                    root[0][r] * p[0] + root[1][r] * p[1] + root[2][r] * p[2] + root[3][r]
+                });
+                (skate_core::math::Vector3::new(world[0], world[1], world[2]), parent)
+            })
+            .collect()
+    }
+
+    /// Stock deck width and overall length (physicsdeck), metres.
+    pub fn deck_size(&self) -> [f32; 2] {
+        self.deck_size
+    }
+
     pub fn bone_names(&self) -> &[String] {
         &self.skater.animation.evaluator.frames.bone_names
     }
@@ -200,6 +236,11 @@ impl Game {
     /// The Skate 3 gameplay camera for this tick, in skate space.
     pub fn camera_frame(&self) -> Option<skate_core::camera::CameraFrame> {
         self.camera.presentation_frame()
+    }
+
+    /// Name of the stock camera shot the Skate 3 camera graph selected.
+    pub fn camera_shot(&self) -> String {
+        self.camera.selected_shot().to_string()
     }
 
     pub fn wheel_contacts(&self) -> usize {

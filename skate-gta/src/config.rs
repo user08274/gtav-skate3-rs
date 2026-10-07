@@ -16,6 +16,7 @@ pub struct Config {
     pub full_gameplay: bool,
     pub mode: skate_gameplay::host::Mode,
     pub skate_camera: bool,
+    pub debug_body: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -35,6 +36,7 @@ impl Default for Config {
             full_gameplay: true,
             mode: skate_gameplay::host::Mode::Easy,
             skate_camera: true,
+            debug_body: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -66,6 +68,8 @@ Gameplay = full
 Difficulty = easy
 ; Use the Skate 3 gameplay camera instead of the GTA camera
 SkateCamera = 1
+; Hide the GTA player and board model; draw the Skate 3 skeleton and board
+DebugBody = 1
 
 ; Board-only mode test controls
 PushForce = 40
@@ -114,6 +118,7 @@ impl Config {
                 "difficulty" => c.mode = skate_gameplay::host::Mode::parse(value)
                     .ok_or_else(|| err("must be easy, normal or hardcore"))?,
                 "skatecamera" => c.skate_camera = flag()?,
+                "debugbody" => c.debug_body = flag()?,
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,

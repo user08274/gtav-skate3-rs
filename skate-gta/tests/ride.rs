@@ -38,7 +38,7 @@ fn skater_rides_on_probed_gta_ground_along_the_player_heading() {
                 Mode::Easy,
                 GtaVec::new(100.0, 200.0, 31.5),
                 90.0,
-                PatchSettings::default(),
+                std::env::var("BIG").map_or(PatchSettings::default(), |_| PatchSettings { cells: 32, spacing: 2.0, ..PatchSettings::default() }),
                 &mut probe,
             )
             .unwrap();
@@ -58,8 +58,10 @@ fn skater_rides_on_probed_gta_ground_along_the_player_heading() {
             assert!(moved.x < -5.0 && moved.y.abs() < moved.x.abs() * 0.3, "rides west: {moved:?}");
             assert!((ride.deck_position().z - 31.6).abs() < 0.3);
             let camera = ride.camera().expect("Skate 3 camera frame");
-            assert!(camera.position.x > ride.deck_position().x, "camera follows from behind (east)");
-            assert!(camera.forward.x < 0.0);
+            let deck = ride.deck_position();
+            assert!(camera.position.x - deck.x > 1.5, "camera follows from behind (east): {:?}", camera.position.sub(deck));
+            assert!(camera.position.z - deck.z < 2.5, "camera stays low: {:?}", camera.position.sub(deck));
+            assert!(camera.forward.x < -0.8, "camera looks ahead, not down: {:?}", camera.forward);
             moved
         })
         .unwrap();

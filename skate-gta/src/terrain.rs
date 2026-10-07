@@ -160,11 +160,15 @@ fn block_is_planar(samples: &[Option<GtaVec>], n: usize, i: usize, j: usize, siz
 
 /// One-sided triangle whose winding gives an upward (+Y) face normal, matching
 /// the convention of the original level geometry: normal = (b - a) x (c - a).
-fn upward_triangle(v: [Vector3; 3], material: RetailContactMaterial) -> Option<WorldTriangle> {
+pub fn upward_vertices(v: [Vector3; 3]) -> [Vector3; 3] {
     let e1 = Vector3::new(v[1].x - v[0].x, v[1].y - v[0].y, v[1].z - v[0].z);
     let e2 = Vector3::new(v[2].x - v[0].x, v[2].y - v[0].y, v[2].z - v[0].z);
     let ny = e1.z * e2.x - e1.x * e2.z;
-    let ordered = if ny >= 0.0 { v } else { [v[0], v[2], v[1]] };
+    if ny >= 0.0 { v } else { [v[0], v[2], v[1]] }
+}
+
+fn upward_triangle(v: [Vector3; 3], material: RetailContactMaterial) -> Option<WorldTriangle> {
+    let ordered = upward_vertices(v);
     let triangle = triangle_from_volume(ordered, 0.0, [1.0; 3], TriangleFeature::ONE_SIDED);
     let n = triangle.feature.normal;
     let valid = triangle.edge_lengths.iter().all(|l| l.is_finite() && *l > 0.0)
@@ -222,6 +226,12 @@ pub struct Patches {
 impl Patches {
     pub fn new(settings: PatchSettings, material: RetailContactMaterial) -> Self {
         Self { settings, material, patches: Vec::new() }
+    }
+
+    /// GTA XY squares the near patches cover, for the far field to skip.
+    pub fn rects(&self) -> Vec<crate::far::Rect> {
+        let h = self.half_extent();
+        self.patches.iter().map(|p| [p.center.x - h, p.center.y - h, p.center.x + h, p.center.y + h]).collect()
     }
 
     fn half_extent(&self) -> f32 {

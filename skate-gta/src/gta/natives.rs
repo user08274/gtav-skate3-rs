@@ -115,6 +115,9 @@ pub fn delete_entity(e: Entity) {
 pub fn set_entity_heading(e: Entity, heading: f32) {
     call!(0x8E2530AA8ADA980E, e, heading);
 }
+pub fn set_entity_visible(e: Entity, visible: bool) {
+    call!(0xEA1C610A04DB6BBB, e, visible, false);
+}
 pub fn set_ped_can_ragdoll(ped: Entity, toggle: bool) {
     call!(0xB128377056A54E2A, ped, toggle);
 }

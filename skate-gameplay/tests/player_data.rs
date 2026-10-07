@@ -24,6 +24,7 @@ fn root() -> Option<PathBuf> {
     std::env::var_os("SKATE_GTA_ASSETS").map(PathBuf::from)
 }
 
+pub fn flat_world(y: f32) -> BoardWorld { flat(y) }
 fn flat(y: f32) -> BoardWorld {
     let v = Vector3::new;
     let quad = [v(-200., y, -200.), v(200., y, -200.), v(200., y, 200.), v(-200., y, 200.)];
@@ -192,4 +193,21 @@ fn y_steps_off_the_board_and_back_on() {
     states.dedup();
     eprintln!("states {states:?}; after first Y {off:?}; posed bones {pose}");
     assert!(states.iter().any(|s| matches!(s, PhysicalStateId::BipedGround | PhysicalStateId::OffBoardPushing)));
+}
+
+#[test]
+fn skeleton_stands_over_the_deck() {
+    let Some(root) = root() else { return };
+    let mut game = game(&root);
+    run(&mut game, 120, |_| [0.0; 18]);
+    let names = game.bone_names().to_vec();
+    let bones = game.skeleton_world();
+    let at = |name: &str| bones[names.iter().position(|n| n == name).unwrap()].0;
+    let (head, hips, foot, deck) = (at("HEAD"), at("HIPS"), at("LEFTFOOT"), game.deck().translation);
+    eprintln!("head {head:?} hips {hips:?} foot {foot:?} deck {deck:?} size {:?}", game.deck_size());
+    assert!(head.y > hips.y && hips.y > foot.y, "upright skeleton");
+    assert!(head.y - deck.y > 1.2 && head.y - deck.y < 2.0);
+    assert!((foot.y - deck.y).abs() < 0.25, "feet on the deck");
+    let [w, l] = game.deck_size();
+    assert!(w > 0.15 && w < 0.35 && l > 0.6 && l < 1.0);
 }

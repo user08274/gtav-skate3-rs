@@ -365,9 +365,12 @@ impl RideSession {
             config.patch,
             &mut probe,
         )?;
-        let prop = spawn_prop(config, ride.deck_position());
+        let prop = if config.debug_body { None } else { spawn_prop(config, ride.deck_position()) };
         n::freeze_entity_position(ped, true);
         n::set_ped_can_ragdoll(ped, false);
+        if config.debug_body {
+            n::set_entity_visible(ped, false);
+        }
         let cam = config.skate_camera.then(|| {
             let cam = n::create_cam();
             n::set_cam_active(cam, true);
@@ -414,6 +417,9 @@ impl RideSession {
             n::point_cam_at_coord(cam, view.position.add(view.forward.scale(10.0)));
             n::set_cam_fov(cam, view.fov_degrees.clamp(10.0, 120.0));
         }
+        if config.debug_body {
+            self.draw_body();
+        }
         if config.debug_draw {
             self.draw_debug();
         }
@@ -428,21 +434,48 @@ impl RideSession {
         );
     }
 
-    fn draw_debug(&self) {
-        let parts = self.ride.game.board_parts();
-        let at = |id: BodyId| self.ride.frame.to_gta(parts[id.index()].translation);
-        let wheels = [BodyId::RightFrontWheel, BodyId::LeftFrontWheel, BodyId::LeftBackWheel, BodyId::RightBackWheel];
-        for i in 0..4 {
-            n::draw_line(at(wheels[i]), at(wheels[(i + 1) % 4]), [255, 200, 0, 255]);
+    /// The Skate 3 skater and board as lines, in place of GTA models.
+    fn draw_body(&self) {
+        const BONE: [u8; 4] = [255, 255, 255, 255];
+        const BOARD: [u8; 4] = [255, 170, 0, 255];
+        let game = &self.ride.game;
+        let names = game.bone_names();
+        let bones = game.skeleton_world();
+        let body = |i: usize| {
+            let name = names[i].as_str();
+            name != "TRAJECTORY" && !name.ends_with("_REPARENTED") && !name.contains("WHEEL")
+                && !name.starts_with("TRUCK") && name != "SKATEBOARD_ROOT"
+        };
+        for (i, &(p, parent)) in bones.iter().enumerate() {
+            if parent < 0 || !body(i) || !body(parent as usize) {
+                continue;
+            }
+            let q = bones[parent as usize].0;
+            n::draw_line(self.ride.frame.to_gta(p), self.ride.frame.to_gta(q), BONE);
         }
         let deck = self.ride.deck_position();
         let axes = self.ride.deck_axes();
-        n::draw_line(deck, deck.add(axes.forward.scale(0.5)), [0, 160, 255, 255]);
-        for p in self.ride.game.skater_body_positions() {
-            let p = self.ride.frame.to_gta(p);
-            n::draw_line(p.add(GtaVec::new(-0.03, 0.0, 0.0)), p.add(GtaVec::new(0.03, 0.0, 0.0)), [255, 60, 200, 255]);
-            n::draw_line(p.add(GtaVec::new(0.0, 0.0, -0.03)), p.add(GtaVec::new(0.0, 0.0, 0.03)), [255, 60, 200, 255]);
+        let [width, length] = game.deck_size();
+        let corner = |side: f32, end: f32| deck.add(axes.right.scale(side * width * 0.5)).add(axes.forward.scale(end * length * 0.5));
+        let outline = [corner(-1.0, -0.8), corner(-1.0, 0.8), corner(-0.5, 1.0), corner(0.5, 1.0),
+            corner(1.0, 0.8), corner(1.0, -0.8), corner(0.5, -1.0), corner(-0.5, -1.0)];
+        for i in 0..outline.len() {
+            n::draw_line(outline[i], outline[(i + 1) % outline.len()], BOARD);
         }
+        let parts = game.board_parts();
+        let at = |id: BodyId| self.ride.frame.to_gta(parts[id.index()].translation);
+        for (a, b) in [(BodyId::RightFrontWheel, BodyId::LeftFrontWheel), (BodyId::RightBackWheel, BodyId::LeftBackWheel)] {
+            n::draw_line(at(a), at(b), BOARD);
+        }
+        for id in [BodyId::RightFrontWheel, BodyId::LeftFrontWheel, BodyId::RightBackWheel, BodyId::LeftBackWheel] {
+            let w = at(id);
+            let r = 0.03;
+            n::draw_line(w.add(axes.forward.scale(-r)), w.add(axes.forward.scale(r)), BOARD);
+            n::draw_line(w.add(axes.up.scale(-r)), w.add(axes.up.scale(r)), BOARD);
+        }
+    }
+
+    fn draw_debug(&self) {
         for patch in &self.ride.patches.patches {
             for t in &patch.triangles {
                 let v = t.triangle.vertices.map(|p| self.ride.frame.to_gta(p));
@@ -463,6 +496,7 @@ impl RideSession {
         }
         n::freeze_entity_position(self.ped, false);
         n::set_ped_can_ragdoll(self.ped, true);
+        n::set_entity_visible(self.ped, true);
         n::set_entity_coords(self.ped, self.ride.hips_position());
         n::notify("SkateGTA: Skate 3 off");
     }

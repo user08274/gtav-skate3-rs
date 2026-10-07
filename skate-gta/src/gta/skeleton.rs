@@ -11,6 +11,7 @@ const FRAG_CACHE: usize = 0x68;
 const FRAG_TYPE: usize = 0x78;
 const CACHE_SKELETON: usize = 0x178;
 const SKELETON_DATA: usize = 0x00;
+const SKELETON_LOCALS: usize = 0x10;
 const SKELETON_GLOBALS: usize = 0x18;
 const SKELETON_COUNT: usize = 0x20;
 const DATA_BONES: usize = 0x20;
@@ -25,15 +26,26 @@ const FRAG_INST_SIGNATURE: [u8; 29] = [
 ];
 
 fn module_image() -> Option<&'static [u8]> {
+    let base = unsafe { GetModuleHandleA(std::ptr::null()) } as *const u8;
+    if base.is_null() {
+        return None;
+    }
+    let (start, end) = image_range(base);
+    Some(unsafe { std::slice::from_raw_parts(base, end - start) })
+}
+
+/// Start and end address of a loaded module image, from its PE header.
+pub fn image_range(base: *const u8) -> (usize, usize) {
     unsafe {
-        let base = GetModuleHandleA(std::ptr::null()) as *const u8;
-        if base.is_null() {
-            return None;
-        }
         let nt = base.add(*(base.add(0x3C) as *const u32) as usize);
         let size = *(nt.add(0x50) as *const u32) as usize;
-        Some(std::slice::from_raw_parts(base, size))
+        (base as usize, base as usize + size)
     }
+}
+
+/// GTA5.exe's image range.
+pub fn game_range() -> (usize, usize) {
+    image_range(unsafe { GetModuleHandleA(std::ptr::null()) } as *const u8)
 }
 
 fn frag_inst_offset() -> Option<usize> {
@@ -56,6 +68,7 @@ unsafe fn read_ptr(base: *const u8, offset: usize) -> *const u8 {
 
 pub struct PedSkeleton {
     globals: *mut f32,
+    pub locals: *mut f32,
     /// Further skeleton instances of the same entity that also get the pose.
     mirrors: Vec<*mut f32>,
     pub parents: Vec<i32>,
@@ -92,6 +105,7 @@ impl PedSkeleton {
             }
             let data = read_ptr(skeleton, SKELETON_DATA);
             let globals = read_ptr(skeleton, SKELETON_GLOBALS) as *mut f32;
+            let locals = read_ptr(skeleton, SKELETON_LOCALS) as *mut f32;
             let count = *(skeleton.add(SKELETON_COUNT) as *const i32);
             if !plausible(data) || !plausible(globals as *const u8) || !(1..=1024).contains(&count) {
                 return Err(format!("ped skeleton looks invalid (bones {count})"));
@@ -121,8 +135,13 @@ impl PedSkeleton {
                     }
                 }
             }
-            Ok(Self { globals, mirrors, parents, describe })
+            Ok(Self { globals, locals, mirrors, parents, describe })
         }
+    }
+
+    /// Entity-relative matrix array (what the watch guards).
+    pub fn objects(&self) -> *mut f32 {
+        self.globals
     }
 
     pub fn len(&self) -> usize {
@@ -143,7 +162,7 @@ impl PedSkeleton {
     /// The draw-handler copy, read the same way, when the entity has one.
     pub fn read_mirror(&self) -> Option<Vec<BonePose>> {
         let globals = *self.mirrors.first()?;
-        Some(Self { globals, mirrors: Vec::new(), parents: self.parents.clone(), describe: String::new() }.read())
+        Some(Self { globals, locals: std::ptr::null_mut(), mirrors: Vec::new(), parents: self.parents.clone(), describe: String::new() }.read())
     }
 
     pub fn write(&self, pose: &[BonePose]) {

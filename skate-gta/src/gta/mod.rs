@@ -4,6 +4,7 @@ mod hud;
 mod natives;
 mod shv;
 mod skeleton;
+mod watch;
 
 use crate::{
     assets,
@@ -342,10 +343,14 @@ fn read_pad() -> [f32; 18] {
 struct Poser {
     rig: crate::pose::Rig,
     frames: std::cell::Cell<u32>,
+    ticks: std::cell::Cell<u32>,
     written: std::cell::RefCell<Vec<crate::pose::BonePose>>,
+    guard: bool,
 }
 
 const POSE_LOG_FRAMES: u32 = 120;
+/// Frames whose matrix accesses the watch records (after things settle).
+const PROBE_FRAMES: std::ops::Range<u32> = 30..33;
 
 fn largest_change(a: &[crate::pose::BonePose], b: &[crate::pose::BonePose]) -> f32 {
     a.iter()
@@ -359,20 +364,54 @@ fn largest_change(a: &[crate::pose::BonePose], b: &[crate::pose::BonePose]) -> f
 }
 
 impl Poser {
-    fn new(ped: n::Entity) -> Result<Self, String> {
+    fn new(ped: n::Entity, guard: bool) -> Result<Self, String> {
         let skeleton = skeleton::PedSkeleton::find(ped)?;
+        let guard = guard && {
+            let own = skeleton::image_range(MODULE.load(Ordering::SeqCst) as *const u8);
+            match watch::start(skeleton.objects(), skeleton.locals, skeleton.len(), true, own, skeleton::game_range()) {
+                Ok(()) => true,
+                Err(e) => {
+                    log(&format!("Ped pose watch unavailable: {e}"));
+                    false
+                }
+            }
+        };
         let index_of = |tag: i32| {
             let i = n::get_ped_bone_index(ped, tag);
             (i >= 0).then_some(i as usize)
         };
         let rig = crate::pose::Rig::new(skeleton.read(), skeleton.parents.clone(), index_of)?;
         log(&format!("Ped pose rig: {} | {}", rig.describe(), skeleton.describe));
-        Ok(Self { rig, frames: Default::default(), written: Default::default() })
+        log(&format!("Ped pose mode: {}", if guard { "guard (override after the game's bone update)" } else { "script" }));
+        Ok(Self { rig, frames: Default::default(), ticks: Default::default(), written: Default::default(), guard })
     }
 
     /// `origin`/`heading` are the transform just given to the ped.
     fn apply(&self, ped: n::Entity, view: &crate::ride::View, names: &[String], origin: GtaVec, heading: f32) -> Result<(), String> {
+        // The script's own reads and writes must not hit the guard pages.
+        watch::disarm();
+        let tick = self.ticks.get();
+        self.ticks.set(tick + 1);
+        if self.guard && tick == PROBE_FRAMES.end {
+            for line in watch::report(&watch::records(), skeleton::game_range()) {
+                log(&line);
+            }
+        }
+        if self.guard && (tick < 8 || tick % 120 == 0) {
+            log(&format!(
+                "Ped pose watch tick {tick}: {} guard faults, {} overrides, {} frames over budget since last tick, frame {:.1} ms",
+                watch::faults(),
+                watch::applied(),
+                watch::over_budget(),
+                n::get_frame_time() * 1000.0
+            ));
+        }
         let skeleton = skeleton::PedSkeleton::find(ped)?;
+        if self.guard && skeleton.objects() as usize != watch::watched_objects() {
+            log("Ped pose watch: the skeleton moved, watching the new one");
+            let own = skeleton::image_range(MODULE.load(Ordering::SeqCst) as *const u8);
+            watch::start(skeleton.objects(), skeleton.locals, skeleton.len(), true, own, skeleton::game_range())?;
+        }
         if skeleton.len() != self.rig.bone_count() {
             return Err("ped skeleton changed".into());
         }
@@ -407,6 +446,17 @@ impl Poser {
             self.frames.set(frame + 1);
         }
         skeleton.write(&pose);
+        if self.guard {
+            watch::set_pose(pose.iter().enumerate().map(|(i, b)| {
+                let v = [b.axes[0], b.axes[1], b.axes[2], b.position];
+                (i, std::array::from_fn(|k| match k % 3 {
+                    0 => v[k / 3].x,
+                    1 => v[k / 3].y,
+                    _ => v[k / 3].z,
+                }))
+            }));
+            watch::arm(tick, PROBE_FRAMES.contains(&tick));
+        }
         if self.frames.get() <= POSE_LOG_FRAMES {
             *self.written.borrow_mut() = pose;
         }
@@ -457,7 +507,7 @@ impl RideSession {
         }
         n::set_ped_can_ragdoll(ped, false);
         let poser = if config.ped_pose {
-            Poser::new(ped)
+            Poser::new(ped, config.pose_guard)
                 .inspect_err(|e| {
                     log(&format!("Ped pose unavailable: {e}"));
                     n::notify(&format!("SkateGTA: ped pose unavailable ({e}), showing the skeleton"));
@@ -522,6 +572,7 @@ impl RideSession {
         n::set_entity_heading(self.ped, heading);
         if let Some(poser) = &self.poser {
             if let Err(e) = poser.apply(self.ped, &view, self.ride.game.bone_names(), origin, heading) {
+                watch::stop();
                 log(&format!("Ped pose stopped: {e}"));
                 self.poser = None;
                 self.draw_body = true;
@@ -599,6 +650,7 @@ impl RideSession {
     }
 
     fn end(self) {
+        watch::stop();
         if let Some(cam) = self.cam {
             n::render_script_cams(false);
             n::destroy_cam(cam);

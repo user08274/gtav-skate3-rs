@@ -21,6 +21,7 @@ pub struct Config {
     pub ped_pose: bool,
     pub ped_freeze: bool,
     pub hud: bool,
+    pub pose_guard: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -45,6 +46,7 @@ impl Default for Config {
             ped_pose: true,
             ped_freeze: true,
             hud: true,
+            pose_guard: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -85,6 +87,9 @@ PedPose = 1
 DebugBody = 0
 ; 1 = freeze the ped in place; 0 = keep it live with gravity and collision off
 PedFreeze = 1
+; How the pose reaches the ped: guard = written right after GTA's own bone
+; update (experimental), script = from the script only (GTA overwrites it)
+PedPoseMode = guard
 ; The original Skate 3 trick and score HUD (assets\\private\\hud)
 Hud = 1
 
@@ -145,6 +150,11 @@ impl Config {
                 "pedpose" => c.ped_pose = flag()?,
                 "pedfreeze" => c.ped_freeze = flag()?,
                 "hud" => c.hud = flag()?,
+                "pedposemode" => c.pose_guard = match value.to_ascii_lowercase().as_str() {
+                    "guard" => true,
+                    "script" => false,
+                    _ => return Err(err("must be guard or script")),
+                },
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,

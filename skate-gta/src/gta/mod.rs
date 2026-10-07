@@ -397,6 +397,20 @@ impl Poser {
         let rig = crate::pose::Rig::new(skeleton.read(), skeleton.parents.clone(), index_of)?;
         log(&format!("Ped pose rig: {} | {}", rig.describe(), skeleton.describe));
         log(&format!("Ped pose mode: {watch:?} (None = script writes only)"));
+        // Rest skeleton for offline retarget checks: index parent tag name, position, axes.
+        let f = |v: GtaVec| format!("{:.5} {:.5} {:.5}", v.x, v.y, v.z);
+        for (i, bone) in rig.rest().iter().enumerate() {
+            log(&format!(
+                "Ped rest {i} {} {:04X} {} p {} x {} y {} z {}",
+                skeleton.parents[i],
+                skeleton.tags.get(i).copied().unwrap_or(0),
+                skeleton.names.get(i).map(|n| n.replace(' ', "_")).filter(|n| !n.is_empty()).unwrap_or("-".into()),
+                f(bone.position),
+                f(bone.axes[0]),
+                f(bone.axes[1]),
+                f(bone.axes[2])
+            ));
+        }
         Ok(Self { rig, frames: Default::default(), ticks: Default::default(), written: Default::default(), watch })
     }
 
@@ -452,6 +466,18 @@ impl Poser {
         let joints: std::collections::HashMap<&str, GtaVec> =
             names.iter().zip(&view.bones).map(|(name, (p, _))| (name.as_str(), model(*p))).collect();
         let pose = self.rig.solve(|name| joints.get(name).copied());
+        if matches!(tick, 150 | 300 | 450 | 600) {
+            let mut list: Vec<String> = names
+                .iter()
+                .zip(&view.bones)
+                .map(|(name, (p, parent))| {
+                    let q = model(*p);
+                    format!("{name} {parent} {:.5} {:.5} {:.5}", q.x, q.y, q.z)
+                })
+                .collect();
+            list.sort();
+            log(&format!("Skate joints tick {tick}: {}", list.join("; ")));
+        }
         let frame = self.frames.get();
         if frame < POSE_LOG_FRAMES {
             let live = skeleton.read();

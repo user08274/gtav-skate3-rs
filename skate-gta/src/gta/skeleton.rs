@@ -17,6 +17,8 @@ const SKELETON_COUNT: usize = 0x20;
 const DATA_BONES: usize = 0x20;
 const BONE_STRIDE: usize = 0x50;
 const BONE_PARENT: usize = 0x32;
+const BONE_NAME: usize = 0x38;
+const BONE_TAG: usize = 0x44;
 const MATRIX_BYTES: usize = 0x40;
 
 /// `cmp`/`ja` around the entity fragInst getter call; its disp8 is the vtable offset.
@@ -72,6 +74,9 @@ pub struct PedSkeleton {
     /// Further skeleton instances of the same entity that also get the pose.
     mirrors: Vec<*mut f32>,
     pub parents: Vec<i32>,
+    /// Bone tag (eAnimBoneTag) and name per bone, for diagnostics.
+    pub tags: Vec<u16>,
+    pub names: Vec<String>,
     pub describe: String,
 }
 
@@ -120,6 +125,16 @@ impl PedSkeleton {
                     if p == 0xFFFF { -1 } else { p as i32 }
                 })
                 .collect();
+            let tags = (0..count as usize).map(|i| *(bones.add(i * BONE_STRIDE + BONE_TAG) as *const u16)).collect();
+            let names = (0..count as usize)
+                .map(|i| {
+                    let name = read_ptr(bones, i * BONE_STRIDE + BONE_NAME);
+                    if !plausible(name) && (name as usize) < 0x10000 {
+                        return String::new();
+                    }
+                    std::ffi::CStr::from_ptr(name.cast()).to_string_lossy().chars().take(48).collect()
+                })
+                .collect();
             // The draw handler may own the skeleton the renderer actually reads.
             let mut mirrors = Vec::new();
             let handler = read_ptr(entity, DRAW_HANDLER);
@@ -135,7 +150,7 @@ impl PedSkeleton {
                     }
                 }
             }
-            Ok(Self { globals, locals, mirrors, parents, describe })
+            Ok(Self { globals, locals, mirrors, parents, tags, names, describe })
         }
     }
 
@@ -162,7 +177,7 @@ impl PedSkeleton {
     /// The draw-handler copy, read the same way, when the entity has one.
     pub fn read_mirror(&self) -> Option<Vec<BonePose>> {
         let globals = *self.mirrors.first()?;
-        Some(Self { globals, locals: std::ptr::null_mut(), mirrors: Vec::new(), parents: self.parents.clone(), describe: String::new() }.read())
+        Some(Self { globals, locals: std::ptr::null_mut(), mirrors: Vec::new(), parents: self.parents.clone(), tags: Vec::new(), names: Vec::new(), describe: String::new() }.read())
     }
 
     pub fn write(&self, pose: &[BonePose]) {

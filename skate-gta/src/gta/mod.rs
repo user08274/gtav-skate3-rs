@@ -114,8 +114,8 @@ fn run() {
         }
         if let Some(s) = session.as_mut() {
             if let Err(reason) = s.update(&config) {
-                log(&reason);
                 if !reason.is_empty() {
+                    log(&reason);
                     n::notify(&format!("SkateGTA: {reason}"));
                 }
                 if let Some(s) = session.take() {
@@ -182,10 +182,9 @@ impl Session {
         )?;
         sim.settle(&mut probe).map_err(|e| format!("board failed to settle: {e:?}"))?;
         let prop = spawn_prop(config, sim.deck_position_gta());
-        match prop {
-            Some(prop) => n::attach_entity_to_entity(ped, prop, GtaVec::new(0.0, 0.0, config.ped_z_offset)),
-            None => n::freeze_entity_position(ped, true),
-        }
+        // The rider stays upright and only follows the board's heading; deck
+        // roll from leaning trucks must not tip the whole ped over.
+        n::freeze_entity_position(ped, true);
         n::set_ped_can_ragdoll(ped, false);
         let mut session = Self { sim, ped, prop, probe };
         session.present(config);
@@ -219,14 +218,14 @@ impl Session {
         let deck = self.sim.deck();
         let axes = coords::entity_axes(deck.basis);
         let position = self.sim.frame.to_gta(deck.translation).add(axes.up.scale(config.model_z_offset));
-        match self.prop {
-            Some(prop) => {
-                let q = coords::quaternion_mul(coords::quaternion(&axes), coords::yaw_quaternion(config.model_yaw_offset));
-                n::set_entity_coords_no_offset(prop, position);
-                n::set_entity_quaternion(prop, q);
-            }
-            None => n::set_entity_coords_no_offset(self.ped, position.add(GtaVec::new(0.0, 0.0, config.ped_z_offset))),
+        if let Some(prop) = self.prop {
+            let q = coords::quaternion_mul(coords::quaternion(&axes), coords::yaw_quaternion(config.model_yaw_offset));
+            n::set_entity_coords_no_offset(prop, position);
+            n::set_entity_quaternion(prop, q);
         }
+        let center = self.sim.frame.to_gta(deck.translation);
+        n::set_entity_coords_no_offset(self.ped, center.add(GtaVec::new(0.0, 0.0, config.ped_z_offset)));
+        n::set_entity_heading(self.ped, coords::heading_degrees(axes.forward));
         if config.debug_draw {
             self.draw_debug();
         }
@@ -266,11 +265,9 @@ impl Session {
     fn end(self) {
         let landing = self.sim.deck_position_gta().add(GtaVec::new(0.0, 0.0, 1.0));
         if let Some(prop) = self.prop {
-            n::detach_entity(self.ped);
             n::delete_entity(prop);
-        } else {
-            n::freeze_entity_position(self.ped, false);
         }
+        n::freeze_entity_position(self.ped, false);
         n::set_ped_can_ragdoll(self.ped, true);
         n::set_entity_coords(self.ped, landing);
         n::notify("SkateGTA: off board");

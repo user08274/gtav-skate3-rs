@@ -122,6 +122,11 @@ pub fn yaw_quaternion(degrees: f32) -> [f32; 4] {
     [0.0, 0.0, s, c]
 }
 
+/// GTA heading (degrees, 0 = north, counter-clockwise) of a horizontal direction.
+pub fn heading_degrees(forward: GtaVec) -> f32 {
+    (-forward.x).atan2(forward.y).to_degrees().rem_euclid(360.0)
+}
+
 pub fn spawn_transform(position: Vector3, heading_degrees: f32) -> RetailAffineTransform {
     RetailAffineTransform {
         basis: basis_for_heading(heading_degrees),
@@ -163,6 +168,14 @@ mod tests {
             let f = axes.forward;
             let cross = GtaVec::new(r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x);
             assert!(close(cross, axes.up), "right x forward must be up");
+        }
+    }
+
+    #[test]
+    fn heading_round_trips_through_the_board_basis() {
+        for heading in [0.0_f32, 45.0, 135.0, 270.0, 359.0] {
+            let forward = entity_axes(basis_for_heading(heading)).forward;
+            assert!((heading_degrees(forward) - heading).abs() < 1e-3, "{heading}");
         }
     }
 

@@ -112,14 +112,8 @@ pub fn delete_entity(e: Entity) {
     let mut handle = e;
     call!(0xAE3CBE5BF394C9C9, &mut handle as *mut i32);
 }
-pub fn attach_entity_to_entity(child: Entity, parent: Entity, offset: GtaVec) {
-    call!(
-        0x6B9BBD38AB0796DF, child, parent, 0i32, offset.x, offset.y, offset.z,
-        0.0f32, 0.0f32, 0.0f32, false, false, false, false, 2i32, true, 0i32,
-    );
-}
-pub fn detach_entity(e: Entity) {
-    call!(0x961AC54BF0613F5D, e, true, true);
+pub fn set_entity_heading(e: Entity, heading: f32) {
+    call!(0x8E2530AA8ADA980E, e, heading);
 }
 pub fn set_ped_can_ragdoll(ped: Entity, toggle: bool) {
     call!(0xB128377056A54E2A, ped, toggle);

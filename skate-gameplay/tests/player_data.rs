@@ -172,3 +172,50 @@ fn skeleton_stands_over_the_deck() {
     let [w, l] = game.deck_size();
     assert!(w > 0.15 && w < 0.35 && l > 0.6 && l < 1.0);
 }
+
+/// Body spins as Skate 3 does them: the left stick held to one side through
+/// the ollie (and in the air) turns the skater; prints the yaw turned in the
+/// air and the trick names the scoring shows.
+#[test]
+fn left_stick_through_an_ollie_spins() {
+    let Some(root) = root() else { return };
+    let yaw = |game: &Game| {
+        let f = game.deck().basis.columns[2];
+        f[0].atan2(f[2]).to_degrees()
+    };
+    for (label, timing) in [("held from the crouch", 0u32..80), ("pushed at the flick", 12..80), ("only in the air", 20..80)] {
+        let mut game = game(&root);
+        run(&mut game, 60, |_| [0.0; 18]);
+        run(&mut game, 120, |i| {
+            let mut pad = [0.0; 18];
+            pad[A] = if i % 60 < 30 { 1.0 } else { 0.0 };
+            pad
+        });
+        let mut names: Vec<String> = Vec::new();
+        let (mut turned, mut last) = (0.0f32, yaw(&game));
+        for i in 0..200u32 {
+            let mut pad = [0.0; 18];
+            pad[RIGHT_STICK_Y] = match i {
+                0..12 => -1.0,
+                12..16 => 1.0,
+                _ => 0.0,
+            };
+            if timing.contains(&i) {
+                pad[LEFT_STICK_X] = 1.0;
+            }
+            game.tick(pad).unwrap();
+            let now = yaw(&game);
+            if !matches!(game.state(), PhysicalStateId::PhysicsGround) {
+                turned += (now - last + 540.0).rem_euclid(360.0) - 180.0;
+            }
+            last = now;
+            let name = game.trick_name().to_string();
+            if names.last() != Some(&name) {
+                names.push(name);
+            }
+        }
+        eprintln!("left stick {label}: turned {turned:.0} deg in the air, tricks {names:?}");
+        assert!(turned.abs() > 90.0, "{label}: the skater spins");
+        assert!(names.iter().any(|n| n.ends_with(" 180") || n.ends_with(" 360")), "{label}: {names:?}");
+    }
+}

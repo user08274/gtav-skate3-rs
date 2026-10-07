@@ -248,6 +248,11 @@ impl Game {
         &self.skater.scoring
     }
 
+    /// Name of the trick the scoring currently shows (changes as it is modified).
+    pub fn trick_name(&self) -> &str {
+        self.skater.scoring.trick_name()
+    }
+
     /// The trick the scoring announced on the last tick, if any.
     pub fn announced_trick(&self) -> Option<&str> {
         self.skater.scoring.new_trick.then(|| self.skater.scoring.trick_name())

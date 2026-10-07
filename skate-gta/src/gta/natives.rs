@@ -151,6 +151,17 @@ pub fn draw_line(a: GtaVec, b: GtaVec, rgba: [u8; 4]) {
         rgba[0] as i32, rgba[1] as i32, rgba[2] as i32, rgba[3] as i32,
     );
 }
+/// GTA's own procedural layers (leg/arm/head/torso IK, gestures) write the
+/// bones after the animation; the Skate 3 pose replaces all of them.
+pub fn set_ped_procedural_layers(ped: Entity, enabled: bool) {
+    call!(0x73518ECE2485412B, ped, enabled); // SET_PED_CAN_LEG_IK
+    call!(0x6C3B4D6D13B4C841, ped, enabled); // SET_PED_CAN_ARM_IK
+    call!(0xC11C18092C5530DC, ped, enabled); // SET_PED_CAN_HEAD_IK
+    call!(0xF2B7106D37947CE0, ped, enabled); // SET_PED_CAN_TORSO_IK
+    call!(0xBAF20C5432058024, ped, enabled); // SET_PED_CAN_PLAY_GESTURE_ANIMS
+    call!(0x6373D1349925A70E, ped, enabled); // SET_PED_CAN_PLAY_AMBIENT_ANIMS
+}
+
 /// Screen aspect ratio (width / height).
 pub fn get_aspect_ratio() -> f32 {
     ret_f32(call!(0xF1307EF624A80D87, false))

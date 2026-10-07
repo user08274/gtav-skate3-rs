@@ -2,6 +2,17 @@
 use crate::{sim::TestControlTuning, terrain::PatchSettings};
 use std::path::PathBuf;
 
+/// How the Skate 3 pose reaches the ped's bones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseMode {
+    /// Right after GTA's bone write, noticed by a CPU data breakpoint.
+    Hardware,
+    /// Right after GTA's bone write, noticed by guard pages (slow, logs who writes).
+    Guard,
+    /// From the script only; GTA overwrites it.
+    Script,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub skate3rust_dir: Option<PathBuf>,
@@ -21,7 +32,7 @@ pub struct Config {
     pub ped_pose: bool,
     pub ped_freeze: bool,
     pub hud: bool,
-    pub pose_guard: bool,
+    pub pose_mode: PoseMode,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -46,7 +57,7 @@ impl Default for Config {
             ped_pose: true,
             ped_freeze: true,
             hud: true,
-            pose_guard: true,
+            pose_mode: PoseMode::Hardware,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -87,9 +98,11 @@ PedPose = 1
 DebugBody = 0
 ; 1 = freeze the ped in place; 0 = keep it live with gravity and collision off
 PedFreeze = 1
-; How the pose reaches the ped: guard = written right after GTA's own bone
-; update (experimental), script = from the script only (GTA overwrites it)
-PedPoseMode = guard
+; How the pose reaches the ped: hardware = written right after GTA's own bone
+; update, noticed by a CPU data breakpoint; guard = the same with guard pages
+; (slow, logs which GTA code writes the bones); script = from the script only
+; (GTA overwrites it)
+PedPoseMode = hardware
 ; The original Skate 3 trick and score HUD (assets\\private\\hud)
 Hud = 1
 
@@ -150,10 +163,11 @@ impl Config {
                 "pedpose" => c.ped_pose = flag()?,
                 "pedfreeze" => c.ped_freeze = flag()?,
                 "hud" => c.hud = flag()?,
-                "pedposemode" => c.pose_guard = match value.to_ascii_lowercase().as_str() {
-                    "guard" => true,
-                    "script" => false,
-                    _ => return Err(err("must be guard or script")),
+                "pedposemode" => c.pose_mode = match value.to_ascii_lowercase().as_str() {
+                    "hardware" => PoseMode::Hardware,
+                    "guard" => PoseMode::Guard,
+                    "script" => PoseMode::Script,
+                    _ => return Err(err("must be hardware, guard or script")),
                 },
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,

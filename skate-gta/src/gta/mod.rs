@@ -345,7 +345,8 @@ struct Poser {
     frames: std::cell::Cell<u32>,
     ticks: std::cell::Cell<u32>,
     written: std::cell::RefCell<Vec<crate::pose::BonePose>>,
-    guard: bool,
+    /// How the pose is put over GTA's; None = script writes only.
+    watch: Option<watch::Mode>,
 }
 
 const POSE_LOG_FRAMES: u32 = 120;
@@ -364,26 +365,33 @@ fn largest_change(a: &[crate::pose::BonePose], b: &[crate::pose::BonePose]) -> f
 }
 
 impl Poser {
-    fn new(ped: n::Entity, guard: bool) -> Result<Self, String> {
+    fn new(ped: n::Entity, mode: config::PoseMode) -> Result<Self, String> {
         let skeleton = skeleton::PedSkeleton::find(ped)?;
-        let guard = guard && {
-            let own = skeleton::image_range(MODULE.load(Ordering::SeqCst) as *const u8);
-            match watch::start(skeleton.objects(), skeleton.locals, skeleton.len(), true, own, skeleton::game_range()) {
-                Ok(()) => true,
-                Err(e) => {
-                    log(&format!("Ped pose watch unavailable: {e}"));
-                    false
-                }
-            }
+        let watch = match mode {
+            config::PoseMode::Hardware => Some(watch::Mode::Hardware),
+            config::PoseMode::Guard => Some(watch::Mode::Guard),
+            config::PoseMode::Script => None,
         };
+        let watch = watch.filter(|&mode| match Self::watch(&skeleton, mode) {
+            Ok(()) => true,
+            Err(e) => {
+                log(&format!("Ped pose watch unavailable: {e}"));
+                false
+            }
+        });
         let index_of = |tag: i32| {
             let i = n::get_ped_bone_index(ped, tag);
             (i >= 0).then_some(i as usize)
         };
         let rig = crate::pose::Rig::new(skeleton.read(), skeleton.parents.clone(), index_of)?;
         log(&format!("Ped pose rig: {} | {}", rig.describe(), skeleton.describe));
-        log(&format!("Ped pose mode: {}", if guard { "guard (override after the game's bone update)" } else { "script" }));
-        Ok(Self { rig, frames: Default::default(), ticks: Default::default(), written: Default::default(), guard })
+        log(&format!("Ped pose mode: {watch:?} (None = script writes only)"));
+        Ok(Self { rig, frames: Default::default(), ticks: Default::default(), written: Default::default(), watch })
+    }
+
+    fn watch(skeleton: &skeleton::PedSkeleton, mode: watch::Mode) -> Result<(), String> {
+        let own = skeleton::image_range(MODULE.load(Ordering::SeqCst) as *const u8);
+        watch::start(skeleton.objects(), skeleton.locals, skeleton.len(), true, own, skeleton::game_range(), mode)
     }
 
     /// `origin`/`heading` are the transform just given to the ped.
@@ -392,12 +400,25 @@ impl Poser {
         watch::disarm();
         let tick = self.ticks.get();
         self.ticks.set(tick + 1);
-        if self.guard && tick == PROBE_FRAMES.end {
+        let guard = self.watch == Some(watch::Mode::Guard);
+        if guard && tick == PROBE_FRAMES.end {
             for line in watch::report(&watch::records(), skeleton::game_range()) {
                 log(&line);
             }
         }
-        if self.guard && (tick < 8 || tick % 120 == 0) {
+        if self.watch == Some(watch::Mode::Hardware) && tick % 60 == 59 {
+            // Threads started since the last pass need the breakpoint too.
+            watch::set_debug_registers();
+        }
+        if self.watch == Some(watch::Mode::Hardware) && (tick < 8 || tick % 120 == 0) {
+            log(&format!(
+                "Ped pose watch tick {tick}: {} breakpoint hits since last tick, {} threads, frame {:.1} ms",
+                watch::hits(),
+                watch::set_debug_registers(),
+                n::get_frame_time() * 1000.0
+            ));
+        }
+        if guard && (tick < 8 || tick % 120 == 0) {
             log(&format!(
                 "Ped pose watch tick {tick}: {} guard faults, {} overrides, {} frames over budget since last tick, frame {:.1} ms",
                 watch::faults(),
@@ -407,10 +428,11 @@ impl Poser {
             ));
         }
         let skeleton = skeleton::PedSkeleton::find(ped)?;
-        if self.guard && skeleton.objects() as usize != watch::watched_objects() {
-            log("Ped pose watch: the skeleton moved, watching the new one");
-            let own = skeleton::image_range(MODULE.load(Ordering::SeqCst) as *const u8);
-            watch::start(skeleton.objects(), skeleton.locals, skeleton.len(), true, own, skeleton::game_range())?;
+        if let Some(mode) = self.watch {
+            if skeleton.objects() as usize != watch::watched_objects() {
+                log("Ped pose watch: the skeleton moved, watching the new one");
+                Self::watch(&skeleton, mode)?;
+            }
         }
         if skeleton.len() != self.rig.bone_count() {
             return Err("ped skeleton changed".into());
@@ -446,7 +468,7 @@ impl Poser {
             self.frames.set(frame + 1);
         }
         skeleton.write(&pose);
-        if self.guard {
+        if self.watch.is_some() {
             watch::set_pose(pose.iter().enumerate().map(|(i, b)| {
                 let v = [b.axes[0], b.axes[1], b.axes[2], b.position];
                 (i, std::array::from_fn(|k| match k % 3 {
@@ -507,7 +529,7 @@ impl RideSession {
         }
         n::set_ped_can_ragdoll(ped, false);
         let poser = if config.ped_pose {
-            Poser::new(ped, config.pose_guard)
+            Poser::new(ped, config.pose_mode)
                 .inspect_err(|e| {
                     log(&format!("Ped pose unavailable: {e}"));
                     n::notify(&format!("SkateGTA: ped pose unavailable ({e}), showing the skeleton"));
@@ -571,6 +593,7 @@ impl RideSession {
         n::set_entity_coords_no_offset(self.ped, origin);
         n::set_entity_heading(self.ped, heading);
         if let Some(poser) = &self.poser {
+            n::set_ped_procedural_layers(self.ped, false);
             if let Err(e) = poser.apply(self.ped, &view, self.ride.game.bone_names(), origin, heading) {
                 watch::stop();
                 log(&format!("Ped pose stopped: {e}"));
@@ -651,6 +674,7 @@ impl RideSession {
 
     fn end(self) {
         watch::stop();
+        n::set_ped_procedural_layers(self.ped, true);
         if let Some(cam) = self.cam {
             n::render_script_cams(false);
             n::destroy_cam(cam);

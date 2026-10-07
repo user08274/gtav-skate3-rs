@@ -37,17 +37,44 @@ pub fn dir_to_gta(v: Vector3) -> GtaVec {
     GtaVec::new(v.x, -v.z, v.y)
 }
 
+/// Skate space anchored at `origin` and turned `yaw` radians about GTA up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     pub origin: GtaVec,
+    pub yaw: f32,
 }
 
 impl Frame {
+    pub fn new(origin: GtaVec) -> Self {
+        Self { origin, yaw: 0.0 }
+    }
+    /// Orient skate +Z (the stock spawn's board forward) along a GTA heading.
+    pub fn facing(origin: GtaVec, heading_degrees: f32) -> Self {
+        Self { origin, yaw: heading_degrees.to_radians() + std::f32::consts::PI }
+    }
+    fn rotate(&self, v: GtaVec, sign: f32) -> GtaVec {
+        let (s, c) = (self.yaw * sign).sin_cos();
+        GtaVec::new(c * v.x - s * v.y, s * v.x + c * v.y, v.z)
+    }
+    pub fn dir_to_skate(&self, v: GtaVec) -> Vector3 {
+        dir_to_skate(self.rotate(v, -1.0))
+    }
+    pub fn dir_to_gta(&self, v: Vector3) -> GtaVec {
+        self.rotate(dir_to_gta(v), 1.0)
+    }
     pub fn to_skate(&self, p: GtaVec) -> Vector3 {
-        dir_to_skate(p.sub(self.origin))
+        self.dir_to_skate(p.sub(self.origin))
     }
     pub fn to_gta(&self, p: Vector3) -> GtaVec {
-        dir_to_gta(p).add(self.origin)
+        self.dir_to_gta(p).add(self.origin)
+    }
+    /// GTA entity axes of a skate basis (`Ri, Up, At` columns).
+    pub fn entity_axes(&self, basis: Basis3) -> EntityAxes {
+        let col = |i: usize| {
+            let c = basis.columns[i];
+            self.dir_to_gta(Vector3::new(c[0], c[1], c[2]))
+        };
+        EntityAxes { right: col(0).scale(-1.0), forward: col(2), up: col(1) }
     }
 }
 
@@ -144,11 +171,25 @@ mod tests {
 
     #[test]
     fn positions_round_trip_through_the_floating_origin() {
-        let frame = Frame { origin: GtaVec::new(-1200.0, 300.0, 40.0) };
+        let frame = Frame::new(GtaVec::new(-1200.0, 300.0, 40.0));
         let p = GtaVec::new(-1195.5, 310.25, 41.0);
         let s = frame.to_skate(p);
         assert_eq!(s.y, 1.0);
         assert!(close(frame.to_gta(s), p));
+    }
+
+    #[test]
+    fn a_facing_frame_points_skate_forward_along_the_heading() {
+        for heading in [0.0_f32, 90.0, 200.0] {
+            let frame = Frame::facing(GtaVec::new(5.0, 6.0, 7.0), heading);
+            let h = heading.to_radians();
+            let forward = frame.dir_to_gta(Vector3::new(0.0, 0.0, 1.0));
+            assert!(close(forward, GtaVec::new(-h.sin(), h.cos(), 0.0)), "{heading}");
+            let p = GtaVec::new(9.0, -3.0, 8.5);
+            assert!(close(frame.to_gta(frame.to_skate(p)), p));
+            let axes = frame.entity_axes(basis_for_heading(0.0));
+            assert!(close(axes.up, GtaVec::new(0.0, 0.0, 1.0)));
+        }
     }
 
     #[test]

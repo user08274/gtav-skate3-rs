@@ -680,6 +680,7 @@ dependencies = [
  "serde_json",
  "skate-core",
  "skate-data",
+ "skate-gameplay",
  "windows-sys 0.59.0",
 ]
 

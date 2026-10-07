@@ -182,6 +182,11 @@ impl Game {
         &self.skater.animation.evaluator.frames.bone_names
     }
 
+    /// The Skate 3 gameplay camera for this tick, in skate space.
+    pub fn camera_frame(&self) -> Option<skate_core::camera::CameraFrame> {
+        self.camera.presentation_frame()
+    }
+
     pub fn wheel_contacts(&self) -> usize {
         self.physics.riding.ground.wheel_contact_count as usize
     }

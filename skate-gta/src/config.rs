@@ -13,6 +13,9 @@ pub struct Config {
     pub ped_z_offset: f32,
     pub probe_flags: i32,
     pub debug_draw: bool,
+    pub full_gameplay: bool,
+    pub mode: skate_gameplay::host::Mode,
+    pub skate_camera: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -29,6 +32,9 @@ impl Default for Config {
             ped_z_offset: 1.0,
             probe_flags: 1 | 16,
             debug_draw: true,
+            full_gameplay: true,
+            mode: skate_gameplay::host::Mode::Easy,
+            skate_camera: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -53,7 +59,15 @@ PedZOffset = 1.0
 ; Draw the solver's deck, wheels and the sampled ground patch
 DebugDraw = 1
 
-; Phase-1 test controls (replaced by Skate 3 riding in phase 2)
+; full = complete Skate 3 gameplay (needs all converted files),
+; board = board physics only (needs skater-collections.json)
+Gameplay = full
+; Stock physics_mode: easy, normal or hardcore
+Difficulty = easy
+; Use the Skate 3 gameplay camera instead of the GTA camera
+SkateCamera = 1
+
+; Board-only mode test controls
 PushForce = 40
 SteerAngle = 0.3
 InvertSteer = 0
@@ -92,6 +106,14 @@ impl Config {
                 "modelzoffset" => c.model_z_offset = float()?,
                 "pedzoffset" => c.ped_z_offset = float()?,
                 "debugdraw" => c.debug_draw = flag()?,
+                "gameplay" => c.full_gameplay = match value.to_ascii_lowercase().as_str() {
+                    "full" => true,
+                    "board" => false,
+                    _ => return Err(err("must be full or board")),
+                },
+                "difficulty" => c.mode = skate_gameplay::host::Mode::parse(value)
+                    .ok_or_else(|| err("must be easy, normal or hardcore"))?,
+                "skatecamera" => c.skate_camera = flag()?,
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,

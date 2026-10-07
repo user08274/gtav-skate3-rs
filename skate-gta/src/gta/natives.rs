@@ -155,6 +155,39 @@ pub fn is_disabled_control_just_pressed(action: i32) -> bool {
     ret_bool(call!(0x91AEF906BCA88877, 0i32, action))
 }
 
+pub fn disable_all_control_actions(group: i32) {
+    call!(0x5F4B6931816E599B, group);
+}
+pub fn get_disabled_control_normal_in(group: i32, action: i32) -> f32 {
+    ret_f32(call!(0x11E65974A982637C, group, action))
+}
+pub fn is_disabled_control_just_pressed_in(group: i32, action: i32) -> bool {
+    ret_bool(call!(0x91AEF906BCA88877, group, action))
+}
+
+pub type Cam = i32;
+pub fn create_cam() -> Cam {
+    ret_i32(call!(0xC3981DCE61D9E13F, c"DEFAULT_SCRIPTED_CAMERA".as_ptr(), true))
+}
+pub fn set_cam_active(cam: Cam, active: bool) {
+    call!(0x026FB97D0A425F84, cam, active);
+}
+pub fn render_script_cams(render: bool) {
+    call!(0x07E5B515DB0636FC, render, false, 0i32, true, false, 0i32);
+}
+pub fn destroy_cam(cam: Cam) {
+    call!(0x865908C81A2C22E9, cam, false);
+}
+pub fn set_cam_coord(cam: Cam, p: GtaVec) {
+    call!(0x4D41783FB745E42E, cam, p.x, p.y, p.z);
+}
+pub fn point_cam_at_coord(cam: Cam, p: GtaVec) {
+    call!(0xF75497BB865F0803, cam, p.x, p.y, p.z);
+}
+pub fn set_cam_fov(cam: Cam, fov: f32) {
+    call!(0xB13C14F66A00D047, cam, fov);
+}
+
 /// Synchronous line-of-sight probe; returns the hit point.
 pub fn probe(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<GtaVec> {
     let handle = ret_i32(call!(

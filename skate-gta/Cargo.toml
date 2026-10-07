@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 skate-core.workspace = true
 skate-data.workspace = true
+skate-gameplay = { path = "../skate-gameplay" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

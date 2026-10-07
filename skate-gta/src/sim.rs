@@ -99,7 +99,7 @@ impl BoardSim {
     ) -> Result<Self, String> {
         let settings = PhysicsSettings::load(data)?;
         let stock = StockControlData::load(data)?;
-        let frame = Frame { origin: ground };
+        let frame = Frame::new(ground);
         let lift = settings.wheel_radius - settings.authored[0].translation.y;
         let spawn = spawn_transform(Vector3::new(0.0, lift, 0.0), heading_degrees);
         let board = BoardRuntime::new(

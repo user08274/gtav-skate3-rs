@@ -6,6 +6,7 @@ pub mod colliders;
 pub mod config;
 pub mod coords;
 pub mod hash;
+pub mod ride;
 pub mod settings;
 pub mod sim;
 pub mod terrain;

@@ -1,6 +1,6 @@
 //! Gameplay modules of the Skate 3 Rust Engine (crates/skate-game), ported
 //! without Bevy. GPL-3.0-only; see the upstream repository for history.
-#![allow(dead_code, unused, clippy::all)]
+#![allow(dead_code, unused, private_interfaces, private_bounds, clippy::all)]
 pub mod animation;
 pub mod animation_pose;
 pub mod camera;

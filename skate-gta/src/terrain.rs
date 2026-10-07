@@ -182,7 +182,11 @@ fn upward_triangle(v: [Vector3; 3], material: RetailContactMaterial) -> Option<W
 /// Static ground mesh with per-triangle bounds, as the original host builds
 /// its levels, so contact queries only visit triangles near each volume.
 pub fn world(patch: &Patch) -> BoardWorld {
-    let triangles = patch.triangles.clone();
+    world_of(std::slice::from_ref(patch))
+}
+
+pub fn world_of(patches: &[Patch]) -> BoardWorld {
+    let triangles: Vec<_> = patches.iter().flat_map(|p| p.triangles.iter().copied()).collect();
     let Some(local_bounds) =
         Bounds::from_points(triangles.iter().flat_map(|t| t.triangle.vertices))
     else {
@@ -205,6 +209,58 @@ pub fn world(patch: &Patch) -> BoardWorld {
     };
     BoardWorld::with_query_metadata(triangles.clone(), metadata)
         .unwrap_or_else(|_| BoardWorld::new(triangles))
+}
+
+/// Ground patches that follow several moving centres (board and skater).
+/// Centres closer than one patch share a patch at their midpoint.
+pub struct Patches {
+    pub settings: PatchSettings,
+    pub material: RetailContactMaterial,
+    pub patches: Vec<Patch>,
+}
+
+impl Patches {
+    pub fn new(settings: PatchSettings, material: RetailContactMaterial) -> Self {
+        Self { settings, material, patches: Vec::new() }
+    }
+
+    fn half_extent(&self) -> f32 {
+        self.settings.cells as f32 * self.settings.spacing * 0.5
+    }
+
+    /// Returns true when the patch set changed and the world must be rebuilt.
+    pub fn refresh(&mut self, probe: &mut dyn GroundProbe, frame: &Frame, centers: &[GtaVec]) -> bool {
+        let wanted = self.cluster(centers);
+        let stale = wanted.len() != self.patches.len()
+            || wanted.iter().zip(&self.patches).any(|(c, p)| p.needs_resample(*c, &self.settings));
+        if stale {
+            self.patches = wanted
+                .iter()
+                .map(|c| sample(probe, frame, *c, &self.settings, self.material))
+                .collect();
+        } else {
+            for p in &mut self.patches {
+                p.age_ticks += 1;
+            }
+        }
+        stale
+    }
+
+    fn cluster(&self, centers: &[GtaVec]) -> Vec<GtaVec> {
+        let reach = self.half_extent();
+        let mut out: Vec<GtaVec> = Vec::new();
+        for &c in centers {
+            if let Some(near) = out.iter_mut().find(|o| {
+                let d = o.sub(c);
+                (d.x * d.x + d.y * d.y).sqrt() < reach
+            }) {
+                *near = near.add(c).scale(0.5);
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -234,7 +290,7 @@ mod tests {
 
     #[test]
     fn slope_becomes_upward_triangles_in_skate_space() {
-        let frame = Frame { origin: GtaVec::new(0.0, 0.0, 10.0) };
+        let frame = Frame::new(GtaVec::new(0.0, 0.0, 10.0));
         let settings = PatchSettings::default();
         let patch = sample(&mut Slope, &frame, GtaVec::new(0.0, 0.0, 10.0), &settings, MATERIAL);
         assert_eq!(patch.triangles.len(), 2, "a plane needs no subdivision");
@@ -255,7 +311,7 @@ mod tests {
 
     #[test]
     fn a_curb_keeps_fine_triangles_only_along_its_edge() {
-        let frame = Frame { origin: GtaVec::default() };
+        let frame = Frame::new(GtaVec::default());
         let settings = PatchSettings::default();
         let patch = sample(&mut Curb, &frame, GtaVec::default(), &settings, MATERIAL);
         let full = settings.cells * settings.cells * 2;
@@ -266,7 +322,7 @@ mod tests {
 
     #[test]
     fn missing_probes_leave_holes_instead_of_bridging() {
-        let frame = Frame { origin: GtaVec::default() };
+        let frame = Frame::new(GtaVec::default());
         let settings = PatchSettings::default();
         let patch = sample(&mut Hole, &frame, GtaVec::default(), &settings, MATERIAL);
         assert!(patch.triangles.len() < settings.cells * settings.cells * 2);
@@ -275,7 +331,7 @@ mod tests {
 
     #[test]
     fn resample_after_moving_or_ageing() {
-        let frame = Frame { origin: GtaVec::default() };
+        let frame = Frame::new(GtaVec::default());
         let settings = PatchSettings::default();
         let mut patch = sample(&mut Hole, &frame, GtaVec::default(), &settings, MATERIAL);
         assert!(!patch.needs_resample(GtaVec::new(0.1, 0.1, 0.0), &settings));

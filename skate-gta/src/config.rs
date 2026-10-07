@@ -22,6 +22,7 @@ pub struct Config {
     pub model_yaw_offset: f32,
     pub model_z_offset: f32,
     pub ped_z_offset: f32,
+    pub ped_yaw_offset: f32,
     pub probe_flags: i32,
     pub debug_draw: bool,
     pub full_gameplay: bool,
@@ -47,6 +48,7 @@ impl Default for Config {
             model_yaw_offset: 0.0,
             model_z_offset: 0.0,
             ped_z_offset: 1.0,
+            ped_yaw_offset: 0.0,
             probe_flags: 1,
             debug_draw: true,
             full_gameplay: true,
@@ -80,6 +82,8 @@ BoardModel = none
 ModelYawOffset = 0
 ModelZOffset = 0
 PedZOffset = 1.0
+; Extra turn (degrees) of the Skate 3 pose on the ped, e.g. 90, 180, 270
+PedYawOffset = 0
 ; Draw the solver's deck, wheels and the sampled ground patch
 DebugDraw = 1
 
@@ -145,6 +149,7 @@ impl Config {
                 "modelyawoffset" => c.model_yaw_offset = float()?,
                 "modelzoffset" => c.model_z_offset = float()?,
                 "pedzoffset" => c.ped_z_offset = float()?,
+                "pedyawoffset" => c.ped_yaw_offset = float()?,
                 "debugdraw" => c.debug_draw = flag()?,
                 "gameplay" => c.full_gameplay = match value.to_ascii_lowercase().as_str() {
                     "full" => true,

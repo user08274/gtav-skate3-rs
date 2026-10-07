@@ -29,6 +29,10 @@ use windows_sys::Win32::{
     UI::Input::KeyboardAndMouse::GetAsyncKeyState,
 };
 
+fn length(v: GtaVec) -> f32 {
+    (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
+}
+
 /// Git commit the .asi was built from.
 const BUILD: &str = env!("SKATEGTA_BUILD");
 
@@ -533,6 +537,7 @@ struct RideSession {
     cam: Option<n::Cam>,
     poser: Option<Poser>,
     draw_body: bool,
+    frames: u32,
 }
 
 impl RideSession {
@@ -590,7 +595,7 @@ impl RideSession {
         if let Some(error) = &ride.hud_error {
             log(&format!("Skate 3 HUD unavailable: {error}"));
         }
-        let mut session = Self { ride, ped, prop, probe, cam, poser, draw_body };
+        let mut session = Self { ride, ped, prop, probe, cam, poser, draw_body, frames: 0 };
         session.present(config);
         n::notify(&format!("SkateGTA {BUILD}: Skate 3 on"));
         Ok(session)
@@ -631,9 +636,23 @@ impl RideSession {
         let heading = coords::heading_degrees(view.axes.forward);
         n::set_entity_coords_no_offset(self.ped, origin);
         n::set_entity_heading(self.ped, heading);
+        n::set_entity_yaw(self.ped, heading);
+        // Pose relative to the ped's real matrix: GTA may not turn it exactly
+        // (or at all) as asked, and the skeleton is drawn in that matrix.
+        let actual = coords::heading_degrees(n::get_entity_forward_vector(self.ped));
+        let actual_origin = n::get_entity_coords(self.ped);
+        self.frames += 1;
+        let off = ((actual - heading + 540.0) % 360.0) - 180.0;
+        if self.frames % 120 == 1 || (off.abs() > 2.0 && self.frames % 30 == 1) {
+            log(&format!(
+                "Ped heading asked {heading:.1}, actual {actual:.1} (off {off:.1}), position off {:.3} m",
+                length(actual_origin.sub(origin))
+            ));
+        }
         if let Some(poser) = &self.poser {
             n::set_ped_procedural_layers(self.ped, false);
-            if let Err(e) = poser.apply(self.ped, &view, self.ride.game.bone_names(), origin, heading) {
+            let model_heading = actual + config.ped_yaw_offset;
+            if let Err(e) = poser.apply(self.ped, &view, self.ride.game.bone_names(), actual_origin, model_heading) {
                 watch::stop();
                 log(&format!("Ped pose stopped: {e}"));
                 self.poser = None;

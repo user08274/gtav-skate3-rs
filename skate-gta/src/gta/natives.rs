@@ -115,6 +115,14 @@ pub fn delete_entity(e: Entity) {
 pub fn set_entity_heading(e: Entity, heading: f32) {
     call!(0x8E2530AA8ADA980E, e, heading);
 }
+/// The entity's actual forward axis (its matrix, as drawn).
+pub fn get_entity_forward_vector(e: Entity) -> GtaVec {
+    ret_vec(call!(0x0A794A5A57F8DF91, e))
+}
+/// Upright rotation with the given yaw (degrees), rotation order ZXY.
+pub fn set_entity_yaw(e: Entity, yaw: f32) {
+    call!(0x8524A8B0171D5E07, e, 0.0f32, 0.0f32, yaw, 2i32, false);
+}
 pub fn set_entity_visible(e: Entity, visible: bool) {
     call!(0xEA1C610A04DB6BBB, e, visible, false);
 }

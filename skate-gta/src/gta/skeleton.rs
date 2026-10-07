@@ -56,8 +56,14 @@ unsafe fn read_ptr(base: *const u8, offset: usize) -> *const u8 {
 
 pub struct PedSkeleton {
     globals: *mut f32,
+    /// Further skeleton instances of the same entity that also get the pose.
+    mirrors: Vec<*mut f32>,
     pub parents: Vec<i32>,
+    pub describe: String,
 }
+
+const DRAW_HANDLER: usize = 0x50;
+const DRAW_HANDLER_SKELETON: usize = 0x28;
 
 impl PedSkeleton {
     pub fn find(ped: i32) -> Result<Self, String> {
@@ -100,7 +106,22 @@ impl PedSkeleton {
                     if p == 0xFFFF { -1 } else { p as i32 }
                 })
                 .collect();
-            Ok(Self { globals, parents })
+            // The draw handler may own the skeleton the renderer actually reads.
+            let mut mirrors = Vec::new();
+            let handler = read_ptr(entity, DRAW_HANDLER);
+            let mut describe = format!("frag skeleton {:p} globals {:p}", skeleton, globals);
+            if plausible(handler) {
+                let drawn = read_ptr(handler, DRAW_HANDLER_SKELETON);
+                describe += &format!(" draw-handler skeleton {:p}", drawn);
+                if plausible(drawn) && drawn != skeleton && *(drawn.add(SKELETON_COUNT) as *const i32) == count {
+                    let drawn_globals = read_ptr(drawn, SKELETON_GLOBALS) as *mut f32;
+                    if plausible(drawn_globals as *const u8) && drawn_globals != globals {
+                        describe += &format!(" globals {:p}", drawn_globals);
+                        mirrors.push(drawn_globals);
+                    }
+                }
+            }
+            Ok(Self { globals, mirrors, parents, describe })
         }
     }
 
@@ -119,14 +140,26 @@ impl PedSkeleton {
             .collect()
     }
 
+    /// The draw-handler copy, read the same way, when the entity has one.
+    pub fn read_mirror(&self) -> Option<Vec<BonePose>> {
+        let globals = *self.mirrors.first()?;
+        Some(Self { globals, mirrors: Vec::new(), parents: self.parents.clone(), describe: String::new() }.read())
+    }
+
     pub fn write(&self, pose: &[BonePose]) {
-        for (i, bone) in pose.iter().enumerate().take(self.len()) {
+        for &globals in std::iter::once(&self.globals).chain(&self.mirrors) {
+            Self::write_to(globals, self.len(), pose);
+        }
+    }
+
+    fn write_to(globals: *mut f32, len: usize, pose: &[BonePose]) {
+        for (i, bone) in pose.iter().enumerate().take(len) {
             let values = [bone.axes[0], bone.axes[1], bone.axes[2], bone.position];
             if values.iter().any(|v| !(v.x.is_finite() && v.y.is_finite() && v.z.is_finite())) {
                 continue;
             }
             unsafe {
-                let m = self.globals.add(i * MATRIX_BYTES / 4);
+                let m = globals.add(i * MATRIX_BYTES / 4);
                 for (r, v) in values.iter().enumerate() {
                     *m.add(r * 4) = v.x;
                     *m.add(r * 4 + 1) = v.y;

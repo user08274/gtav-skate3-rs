@@ -121,6 +121,12 @@ pub fn set_entity_visible(e: Entity, visible: bool) {
 pub fn get_ped_bone_index(ped: Entity, tag: i32) -> i32 {
     ret_i32(call!(0x3F428D08BE5AAE31, ped, tag))
 }
+pub fn set_entity_has_gravity(e: Entity, toggle: bool) {
+    call!(0x4A4722448F18EEF5, e, toggle);
+}
+pub fn set_ped_gravity(ped: Entity, toggle: bool) {
+    call!(0x9FF447B6B6AD960A, ped, toggle);
+}
 pub fn set_ped_can_ragdoll(ped: Entity, toggle: bool) {
     call!(0xB128377056A54E2A, ped, toggle);
 }

@@ -19,6 +19,7 @@ pub struct Config {
     pub low_camera: bool,
     pub debug_body: bool,
     pub ped_pose: bool,
+    pub ped_freeze: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -41,6 +42,7 @@ impl Default for Config {
             low_camera: false,
             debug_body: false,
             ped_pose: true,
+            ped_freeze: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -79,6 +81,8 @@ CameraAngle = high
 PedPose = 1
 ; Also draw the Skate 3 skeleton and board as lines
 DebugBody = 0
+; 1 = freeze the ped in place; 0 = keep it live with gravity and collision off
+PedFreeze = 1
 
 ; Board-only mode test controls
 PushForce = 40
@@ -135,6 +139,7 @@ impl Config {
                 },
                 "debugbody" => c.debug_body = flag()?,
                 "pedpose" => c.ped_pose = flag()?,
+                "pedfreeze" => c.ped_freeze = flag()?,
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,

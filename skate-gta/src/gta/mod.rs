@@ -344,7 +344,7 @@ struct Poser {
     written: std::cell::RefCell<Vec<crate::pose::BonePose>>,
 }
 
-const POSE_LOG_FRAMES: u32 = 4;
+const POSE_LOG_FRAMES: u32 = 120;
 
 fn largest_change(a: &[crate::pose::BonePose], b: &[crate::pose::BonePose]) -> f32 {
     a.iter()
@@ -365,7 +365,7 @@ impl Poser {
             (i >= 0).then_some(i as usize)
         };
         let rig = crate::pose::Rig::new(skeleton.read(), skeleton.parents.clone(), index_of)?;
-        log(&format!("Ped pose rig: {}", rig.describe()));
+        log(&format!("Ped pose rig: {} | {}", rig.describe(), skeleton.describe));
         Ok(Self { rig, frames: Default::default(), written: Default::default() })
     }
 
@@ -387,16 +387,22 @@ impl Poser {
         if frame < POSE_LOG_FRAMES {
             let live = skeleton.read();
             let written = self.written.borrow();
-            let key = ["HIPS", "SPINE", "HEAD", "LEFTUPLEG", "RIGHTUPLEG", "LEFTARM", "LEFTFOREARM", "LEFTHAND"];
-            let targets: Vec<_> = key.iter().map(|k| format!("{k}={:?}", joints.get(k))).collect();
-            log(&format!(
-                "Ped pose frame {frame}: joints {} | game changed our last write by {:?} | live vs rest {:.3} | solved vs rest {:.3} | pelvis axes {:?}",
-                targets.join(" "),
-                (!written.is_empty()).then(|| largest_change(&live, &written)),
-                largest_change(&live, self.rig.rest()),
-                largest_change(&pose, self.rig.rest()),
-                pose.get(0..3).map(|p| p.iter().map(|b| b.position).collect::<Vec<_>>()),
-            ));
+            let changed = (!written.is_empty()).then(|| largest_change(&live, &written));
+            let mirror = skeleton.read_mirror().map(|m| (largest_change(&m, self.rig.rest()), (!written.is_empty()).then(|| largest_change(&m, &written))));
+            if frame < 3 {
+                let key = ["HIPS", "SPINE", "HEAD", "LEFTUPLEG", "RIGHTUPLEG", "LEFTARM", "LEFTFOREARM", "LEFTHAND"];
+                let targets: Vec<_> = key.iter().map(|k| format!("{k}={:?}", joints.get(k))).collect();
+                log(&format!("Ped pose frame {frame}: joints {}", targets.join(" ")));
+            }
+            if frame < 6 || frame % 20 == 0 {
+                log(&format!(
+                    "Ped pose frame {frame}: frag copy changed by game {:?}, vs rest {:.3}; draw-handler copy (vs rest, vs our write) {:?}; solved vs rest {:.3}",
+                    changed,
+                    largest_change(&live, self.rig.rest()),
+                    mirror,
+                    largest_change(&pose, self.rig.rest()),
+                ));
+            }
             self.frames.set(frame + 1);
         }
         skeleton.write(&pose);
@@ -441,7 +447,13 @@ impl RideSession {
         let mut ride = ride;
         ride.game.set_low_camera(config.low_camera);
         let prop = if config.board_model.eq_ignore_ascii_case("none") { None } else { spawn_prop(config, ride.deck_position()) };
-        n::freeze_entity_position(ped, true);
+        if config.ped_freeze {
+            n::freeze_entity_position(ped, true);
+        } else {
+            n::set_entity_has_gravity(ped, false);
+            n::set_ped_gravity(ped, false);
+            n::set_entity_collision(ped, false, false);
+        }
         n::set_ped_can_ragdoll(ped, false);
         let poser = if config.ped_pose {
             Poser::new(ped)
@@ -584,6 +596,9 @@ impl RideSession {
             n::delete_entity(prop);
         }
         n::freeze_entity_position(self.ped, false);
+        n::set_entity_has_gravity(self.ped, true);
+        n::set_ped_gravity(self.ped, true);
+        n::set_entity_collision(self.ped, true, true);
         n::set_ped_can_ragdoll(self.ped, true);
         n::set_entity_visible(self.ped, true);
         n::set_entity_coords(self.ped, self.ride.hips_position());

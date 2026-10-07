@@ -118,6 +118,9 @@ pub fn set_entity_heading(e: Entity, heading: f32) {
 pub fn set_entity_visible(e: Entity, visible: bool) {
     call!(0xEA1C610A04DB6BBB, e, visible, false);
 }
+pub fn get_ped_bone_index(ped: Entity, tag: i32) -> i32 {
+    ret_i32(call!(0x3F428D08BE5AAE31, ped, tag))
+}
 pub fn set_ped_can_ragdoll(ped: Entity, toggle: bool) {
     call!(0xB128377056A54E2A, ped, toggle);
 }

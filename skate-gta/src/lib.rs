@@ -8,6 +8,7 @@ pub mod config;
 pub mod coords;
 pub mod far;
 pub mod hash;
+pub mod pose;
 pub mod ride;
 pub mod settings;
 pub mod sim;

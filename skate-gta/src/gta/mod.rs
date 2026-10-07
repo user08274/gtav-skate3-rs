@@ -2,6 +2,7 @@
 //! riding session (board prop, attached player, fixed-step simulation).
 mod natives;
 mod shv;
+mod skeleton;
 
 use crate::{
     assets,
@@ -336,12 +337,48 @@ fn read_pad() -> [f32; 18] {
     })
 }
 
+/// Drives the player ped's skeleton with the Skate 3 pose.
+struct Poser {
+    rig: crate::pose::Rig,
+}
+
+impl Poser {
+    fn new(ped: n::Entity) -> Result<Self, String> {
+        let skeleton = skeleton::PedSkeleton::find(ped)?;
+        let index_of = |tag: i32| {
+            let i = n::get_ped_bone_index(ped, tag);
+            (i >= 0).then_some(i as usize)
+        };
+        let rig = crate::pose::Rig::new(skeleton.read(), skeleton.parents.clone(), index_of)?;
+        Ok(Self { rig })
+    }
+
+    /// `origin`/`heading` are the transform just given to the ped.
+    fn apply(&self, ped: n::Entity, view: &crate::ride::View, names: &[String], origin: GtaVec, heading: f32) -> Result<(), String> {
+        let skeleton = skeleton::PedSkeleton::find(ped)?;
+        if skeleton.len() != self.rig.bone_count() {
+            return Err("ped skeleton changed".into());
+        }
+        let (s, c) = heading.to_radians().sin_cos();
+        let model = |p: GtaVec| {
+            let d = p.sub(origin);
+            GtaVec::new(d.x * c + d.y * s, -d.x * s + d.y * c, d.z)
+        };
+        let joints: std::collections::HashMap<&str, GtaVec> =
+            names.iter().zip(&view.bones).map(|(name, (p, _))| (name.as_str(), model(*p))).collect();
+        skeleton.write(&self.rig.solve(|name| joints.get(name).copied()));
+        Ok(())
+    }
+}
+
 struct RideSession {
     ride: Ride,
     ped: n::Entity,
     prop: Option<n::Entity>,
     probe: GtaProbe,
     cam: Option<n::Cam>,
+    poser: Option<Poser>,
+    draw_body: bool,
 }
 
 impl RideSession {
@@ -367,19 +404,30 @@ impl RideSession {
         )?;
         let mut ride = ride;
         ride.game.set_low_camera(config.low_camera);
-        let prop = if config.debug_body { None } else { spawn_prop(config, ride.deck_position()) };
+        let prop = if config.board_model.eq_ignore_ascii_case("none") { None } else { spawn_prop(config, ride.deck_position()) };
         n::freeze_entity_position(ped, true);
         n::set_ped_can_ragdoll(ped, false);
-        if config.debug_body {
+        let poser = if config.ped_pose {
+            Poser::new(ped)
+                .inspect_err(|e| {
+                    log(&format!("Ped pose unavailable: {e}"));
+                    n::notify(&format!("SkateGTA: ped pose unavailable ({e}), showing the skeleton"));
+                })
+                .ok()
+        } else {
+            None
+        };
+        if poser.is_none() {
             n::set_entity_visible(ped, false);
         }
+        let draw_body = config.debug_body || poser.is_none() || prop.is_none();
         let cam = config.skate_camera.then(|| {
             let cam = n::create_cam();
             n::set_cam_active(cam, true);
             n::render_script_cams(true);
             cam
         });
-        let mut session = Self { ride, ped, prop, probe, cam };
+        let mut session = Self { ride, ped, prop, probe, cam, poser, draw_body };
         session.present(config);
         n::notify("SkateGTA: Skate 3 on");
         Ok(session)
@@ -410,15 +458,25 @@ impl RideSession {
             n::set_entity_coords_no_offset(prop, view.deck.add(view.axes.up.scale(config.model_z_offset)));
             n::set_entity_quaternion(prop, q);
         }
-        n::set_entity_coords_no_offset(self.ped, view.hips.add(GtaVec::new(0.0, 0.0, config.ped_z_offset - 1.0)));
-        n::set_entity_heading(self.ped, coords::heading_degrees(view.forward));
+        let origin = view.hips.add(GtaVec::new(0.0, 0.0, config.ped_z_offset - 1.0));
+        let heading = coords::heading_degrees(view.forward);
+        n::set_entity_coords_no_offset(self.ped, origin);
+        n::set_entity_heading(self.ped, heading);
+        if let Some(poser) = &self.poser {
+            if let Err(e) = poser.apply(self.ped, &view, self.ride.game.bone_names(), origin, heading) {
+                log(&format!("Ped pose stopped: {e}"));
+                self.poser = None;
+                self.draw_body = true;
+                n::set_entity_visible(self.ped, false);
+            }
+        }
         if let (Some(cam), Some(camera)) = (self.cam, view.camera) {
             n::set_cam_coord(cam, camera.position);
             n::point_cam_at_coord(cam, camera.position.add(camera.forward.scale(10.0)));
             n::set_cam_fov(cam, camera.fov_degrees.clamp(10.0, 120.0));
         }
-        if config.debug_body {
-            self.draw_body(&view);
+        if self.draw_body {
+            self.draw_body(&view, config.debug_body || self.poser.is_none());
         }
         if config.debug_draw {
             self.draw_debug();
@@ -435,7 +493,7 @@ impl RideSession {
     }
 
     /// The Skate 3 skater and board as lines, in place of GTA models.
-    fn draw_body(&self, view: &crate::ride::View) {
+    fn draw_body(&self, view: &crate::ride::View, skeleton: bool) {
         const BONE: [u8; 4] = [255, 255, 255, 255];
         const BOARD: [u8; 4] = [255, 170, 0, 255];
         let names = self.ride.game.bone_names();
@@ -445,7 +503,7 @@ impl RideSession {
                 && !name.starts_with("TRUCK") && name != "SKATEBOARD_ROOT"
         };
         for (i, &(p, parent)) in view.bones.iter().enumerate() {
-            if parent < 0 || !body(i) || !body(parent as usize) {
+            if !skeleton || parent < 0 || !body(i) || !body(parent as usize) {
                 continue;
             }
             n::draw_line(p, view.bones[parent as usize].0, BONE);

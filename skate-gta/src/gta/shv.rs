@@ -15,6 +15,7 @@ pub struct Api {
     native_init: unsafe extern "C" fn(u64),
     native_push64: unsafe extern "C" fn(u64),
     native_call: unsafe extern "C" fn() -> *mut u64,
+    handle_address: unsafe extern "C" fn(i32) -> *mut u8,
 }
 
 // Function pointers into ScriptHookV; they are valid for the process lifetime.
@@ -48,6 +49,7 @@ pub fn load() -> Result<&'static Api, &'static str> {
         native_init: resolve!(module, "?nativeInit@@YAX_K@Z"),
         native_push64: resolve!(module, "?nativePush64@@YAX_K@Z"),
         native_call: resolve!(module, "?nativeCall@@YAPEA_KXZ"),
+        handle_address: resolve!(module, "?getScriptHandleBaseAddress@@YAPEAEH@Z"),
     };
     Ok(API.get_or_init(|| api))
 }
@@ -71,6 +73,11 @@ pub fn unregister(module: HMODULE) {
 /// Yields the script fiber; 0 resumes on the next game frame.
 pub fn wait(ms: u32) {
     unsafe { (api().script_wait)(ms) };
+}
+
+/// Game object behind a script handle (CEntity* for entities), or null.
+pub fn handle_address(handle: i32) -> *mut u8 {
+    unsafe { (api().handle_address)(handle) }
 }
 
 /// Invoke a native by hash with 64-bit argument words.

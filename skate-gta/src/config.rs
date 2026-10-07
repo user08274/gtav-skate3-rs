@@ -18,6 +18,7 @@ pub struct Config {
     pub skate_camera: bool,
     pub low_camera: bool,
     pub debug_body: bool,
+    pub ped_pose: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -28,7 +29,7 @@ impl Default for Config {
             skate3rust_dir: None,
             asset_root: None,
             toggle_key: 0x74, // F5
-            board_model: "p_defilied_ragdoll_01_s".into(),
+            board_model: "none".into(),
             model_yaw_offset: 0.0,
             model_z_offset: 0.0,
             ped_z_offset: 1.0,
@@ -38,7 +39,8 @@ impl Default for Config {
             mode: skate_gameplay::host::Mode::Easy,
             skate_camera: true,
             low_camera: false,
-            debug_body: true,
+            debug_body: false,
+            ped_pose: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -54,9 +56,10 @@ Skate3RustDir = C:\\Games\\skate3rust
 
 ; Virtual-key code to get on/off the board (0x74 = F5)
 ToggleKey = 0x74
-; Object used as the board model. Vanilla GTA has no skateboard; replace this
-; object with a skateboard .ydr (as SkateV does) or pick another prop.
-BoardModel = p_defilied_ragdoll_01_s
+; Object used as the board model, or none to draw the board as lines.
+; Vanilla GTA has no skateboard: e.g. replace p_defilied_ragdoll_01_s with a
+; skateboard .ydr (as SkateV does) and put that name here.
+BoardModel = none
 ModelYawOffset = 0
 ModelZOffset = 0
 PedZOffset = 1.0
@@ -72,8 +75,10 @@ Difficulty = easy
 SkateCamera = 1
 ; Skate 3 Camera Angle: high or low
 CameraAngle = high
-; Hide the GTA player and board model; draw the Skate 3 skeleton and board
-DebugBody = 1
+; Pose the GTA player with the Skate 3 skater's animation
+PedPose = 1
+; Also draw the Skate 3 skeleton and board as lines
+DebugBody = 0
 
 ; Board-only mode test controls
 PushForce = 40
@@ -129,6 +134,7 @@ impl Config {
                     _ => return Err(err("must be high or low")),
                 },
                 "debugbody" => c.debug_body = flag()?,
+                "pedpose" => c.ped_pose = flag()?,
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,

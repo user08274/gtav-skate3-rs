@@ -33,6 +33,7 @@ pub struct Config {
     pub ped_pose: bool,
     pub ped_freeze: bool,
     pub hud: bool,
+    pub grind_edges: bool,
     pub pose_mode: PoseMode,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
@@ -59,6 +60,7 @@ impl Default for Config {
             ped_pose: true,
             ped_freeze: true,
             hud: true,
+            grind_edges: true,
             pose_mode: PoseMode::Hook,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
@@ -107,6 +109,8 @@ PedFreeze = 1
 ; (slow, logs which GTA code touches the bones); script = from the script
 ; only (GTA overwrites it)
 PedPoseMode = hook
+; Find curbs, ledges and step edges to grind (yellow lines with DebugDraw)
+GrindEdges = 1
 ; The original Skate 3 trick and score HUD (assets\\private\\hud)
 Hud = 1
 
@@ -168,6 +172,7 @@ impl Config {
                 "pedpose" => c.ped_pose = flag()?,
                 "pedfreeze" => c.ped_freeze = flag()?,
                 "hud" => c.hud = flag()?,
+                "grindedges" => c.grind_edges = flag()?,
                 "pedposemode" => c.pose_mode = match value.to_ascii_lowercase().as_str() {
                     "hook" => PoseMode::Hook,
                     "guard" => PoseMode::Guard,

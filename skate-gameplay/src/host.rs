@@ -121,6 +121,31 @@ impl Game {
         self.physics.replace_world(world)
     }
 
+    /// Grind lines in skate space (polylines along ledge, curb and rail tops).
+    /// Replacing them mid-grind would drop the rail under the board, so hosts
+    /// should only call this while `grinding()` is false.
+    pub fn set_grind_rails(&mut self, rails: &[Vec<skate_core::math::Vector3>]) -> Result<(), String> {
+        let rails: Vec<skate_data::skate_map::Rail> = rails
+            .iter()
+            .enumerate()
+            .filter(|(_, points)| points.len() >= 2)
+            .map(|(i, points)| skate_data::skate_map::Rail {
+                name: format!("host_edge_{i}"),
+                points: points.iter().map(|p| [p.x, p.y, p.z]).collect(),
+                closed: false,
+                native: None,
+            })
+            .collect();
+        let provider = self.physics.replace_grind_rails(&rails)?;
+        self.skater.trajectory.bind_grind_world(provider);
+        Ok(())
+    }
+
+    /// The skater is in one of the grind states.
+    pub fn grinding(&self) -> bool {
+        (400..=405).contains(&(self.state() as u32))
+    }
+
     /// Line-query source beyond the static world (cleared by `set_world`).
     pub fn set_external_queries(
         &mut self,

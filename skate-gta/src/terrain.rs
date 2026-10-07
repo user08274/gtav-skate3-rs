@@ -36,7 +36,8 @@ impl Default for PatchSettings {
             cells: 8,
             spacing: 0.4,
             probe_above: 1.5,
-            probe_below: 3.0,
+            // Deep enough to find the ground under a high jump.
+            probe_below: 50.0,
             resample_distance: 0.4,
             resample_ticks: 15,
         }

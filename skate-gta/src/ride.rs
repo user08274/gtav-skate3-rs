@@ -3,6 +3,7 @@
 //! board and the skater, and GTA-space views of the results.
 use crate::{
     coords::{EntityAxes, Frame, GtaVec},
+    edges::{EdgeFinder, EdgeSettings},
     far::{FarField, FarSettings},
     terrain::{GroundProbe, PatchSettings, Patches},
 };
@@ -34,6 +35,14 @@ pub struct Ride {
     pub hud: Option<Hud>,
     pub hud_error: Option<String>,
     hud_sprites: Vec<Sprite>,
+    /// Grindable step edges around the skater and the lines last given to the game.
+    pub edges: EdgeFinder,
+    /// Last ground the game refused (logged by the host; the old ground stays).
+    pub world_error: Option<String>,
+    /// Look for grindable edges at all (`GrindEdges`).
+    pub grind_edges: bool,
+    edges_given: u64,
+    grind_lines: Vec<Vec<GtaVec>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,6 +80,11 @@ impl Ride {
             hud,
             hud_error,
             hud_sprites: Vec::new(),
+            edges: EdgeFinder::new(EdgeSettings::default()),
+            grind_edges: true,
+            world_error: None,
+            edges_given: 0,
+            grind_lines: Vec::new(),
         };
         // Fill the whole far field once so the camera starts with full ground.
         let side = 2 * ride.far.settings.radius_cells as usize + 1;
@@ -88,15 +102,49 @@ impl Ride {
     /// Probes GTA around the board and skater. Must run on the script fiber.
     pub fn refresh_world(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
         let centers = [self.deck_position(), self.hips_position()];
-        if self.patches.refresh(probe, &self.frame, &centers) {
+        // An empty sample (nothing under the board within reach) keeps the
+        // last ground: the game cannot take a world without surfaces.
+        let found = self.patches.refresh(probe, &self.frame, &centers)
+            && self.patches.patches.iter().any(|p| !p.triangles.is_empty());
+        if found {
             let world = crate::terrain::world_of(&self.patches.patches);
             let game = &mut self.game;
-            crate::bigstack::run(move || game.set_world(world))?;
+            if let Err(error) = crate::bigstack::run(move || game.set_world(world)) {
+                self.world_error = Some(error);
+            }
         }
         self.far.update(probe, self.hips_position());
         let queries = self.far.queries(self.frame, self.patches.rects());
         self.game.set_external_queries(Some(std::sync::Arc::new(queries)));
+        self.refresh_grind_lines(probe)
+    }
+
+    /// Finds step edges near the skater and hands them to the game as grind
+    /// lines. Only while rolling or walking: swapping the lines in the air or
+    /// mid-grind would pull the rail out from under a landing or a grind.
+    fn refresh_grind_lines(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
+        if !self.grind_edges {
+            return Ok(());
+        }
+        let center = self.hips_position();
+        self.edges.update(probe, center);
+        let settled = matches!(self.game.state() as u32, 100..=105 | 500 | 502);
+        if self.edges.version == self.edges_given || !settled {
+            return Ok(());
+        }
+        let lines = self.edges.polylines(center, self.edges.settings.radius + 2.0);
+        let rails: Vec<Vec<skate_core::math::Vector3>> =
+            lines.iter().map(|line| line.iter().map(|&p| self.frame.to_skate(p)).collect()).collect();
+        let game = &mut self.game;
+        crate::bigstack::run(move || game.set_grind_rails(&rails))?;
+        self.grind_lines = lines;
+        self.edges_given = self.edges.version;
         Ok(())
+    }
+
+    /// The grind lines the game currently has, in GTA space.
+    pub fn grind_lines(&self) -> &[Vec<GtaVec>] {
+        &self.grind_lines
     }
 
     pub fn advance(

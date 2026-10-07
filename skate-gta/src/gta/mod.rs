@@ -563,6 +563,7 @@ impl RideSession {
         )?;
         let mut ride = ride;
         ride.game.set_low_camera(config.low_camera);
+        ride.grind_edges = config.grind_edges;
         let prop = if config.board_model.eq_ignore_ascii_case("none") { None } else { spawn_prop(config, ride.deck_position()) };
         if config.ped_freeze {
             n::freeze_entity_position(ped, true);
@@ -616,6 +617,9 @@ impl RideSession {
         self.ride
             .advance_game(elapsed, 4, pad)
             .map_err(|e| format!("gameplay stopped: {e}"))?;
+        if let Some(error) = self.ride.world_error.take() {
+            log(&format!("Ground sample skipped: {error}"));
+        }
         if had_hud && self.ride.hud.is_none() {
             log(self.ride.hud_error.as_deref().unwrap_or("Skate 3 HUD stopped"));
         }
@@ -720,6 +724,18 @@ impl RideSession {
     }
 
     fn draw_debug(&self) {
+        for line in self.ride.grind_lines() {
+            for w in line.windows(2) {
+                let lift = GtaVec::new(0.0, 0.0, 0.02);
+                n::draw_line(w[0].add(lift), w[1].add(lift), [255, 220, 0, 255]);
+            }
+        }
+        for line in self.ride.grind_lines() {
+            for w in line.windows(2) {
+                let lift = GtaVec::new(0.0, 0.0, 0.02);
+                n::draw_line(w[0].add(lift), w[1].add(lift), [255, 220, 0, 255]);
+            }
+        }
         for patch in &self.ride.patches.patches {
             for t in &patch.triangles {
                 let v = t.triangle.vertices.map(|p| self.ride.frame.to_gta(p));

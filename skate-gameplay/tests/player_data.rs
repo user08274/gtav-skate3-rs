@@ -55,7 +55,7 @@ fn flat(y: f32) -> BoardWorld {
 
 fn game(root: &PathBuf) -> Game {
     let mut game = Game::load(root, Mode::Easy).expect("gameplay loads from the player's files");
-    game.set_world(flat(SPAWN_GROUND_HEIGHT));
+    game.set_world(flat(SPAWN_GROUND_HEIGHT)).unwrap();
     game
 }
 

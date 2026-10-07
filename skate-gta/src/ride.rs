@@ -42,15 +42,16 @@ impl Ride {
         let game = Game::load(root, mode)?;
         let frame = Frame::facing(ground.add(GtaVec::new(0.0, 0.0, -SPAWN_GROUND_HEIGHT)), heading_degrees);
         let mut ride = Self { game, frame, patches: Patches::new(patch, FLOOR) };
-        ride.refresh_world(probe);
+        ride.refresh_world(probe)?;
         Ok(ride)
     }
 
-    fn refresh_world(&mut self, probe: &mut dyn GroundProbe) {
+    fn refresh_world(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
         let centers = [self.deck_position(), self.hips_position()];
         if self.patches.refresh(probe, &self.frame, &centers) {
-            self.game.set_world(crate::terrain::world_of(&self.patches.patches));
+            self.game.set_world(crate::terrain::world_of(&self.patches.patches))?;
         }
+        Ok(())
     }
 
     pub fn advance(
@@ -60,7 +61,7 @@ impl Ride {
         pad: [f32; 18],
         probe: &mut dyn GroundProbe,
     ) -> Result<u32, String> {
-        self.refresh_world(probe);
+        self.refresh_world(probe)?;
         self.game.advance(elapsed, max_ticks, pad)
     }
 

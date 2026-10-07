@@ -7,6 +7,7 @@ use crate::{
     assets,
     config::{self, Config},
     coords::{self, GtaVec},
+    ride::Ride,
     sim::{BoardSim, Controls},
     terrain::GroundProbe,
 };
@@ -90,11 +91,41 @@ fn load_config() -> Config {
     }
 }
 
+enum Active {
+    Board(Session),
+    Full(RideSession),
+}
+
+impl Active {
+    fn update(&mut self, config: &Config) -> Result<(), String> {
+        match self {
+            Self::Board(s) => s.update(config),
+            Self::Full(s) => s.update(config),
+        }
+    }
+    fn end(self) {
+        match self {
+            Self::Board(s) => s.end(),
+            Self::Full(s) => s.end(),
+        }
+    }
+}
+
+fn start(config: &Config, data: &mut Option<Collections>) -> Result<Active, String> {
+    if config.full_gameplay {
+        let root = assets::resolve(config.asset_root.as_deref(), config.skate3rust_dir.as_deref())?;
+        RideSession::start(config, &root).map(Active::Full)
+    } else {
+        let data = load_data(config, data)?;
+        Session::start(config, data).map(Active::Board)
+    }
+}
+
 fn run() {
     let config = load_config();
     log("SkateGTA loaded");
     let mut data: Option<Collections> = None;
-    let mut session: Option<Session> = None;
+    let mut session: Option<Active> = None;
     let mut key_was_down = false;
     loop {
         let key_down = unsafe { GetAsyncKeyState(config.toggle_key as i32) } as u16 & 0x8000 != 0;
@@ -103,7 +134,7 @@ fn run() {
         if toggled {
             match session.take() {
                 Some(s) => s.end(),
-                None => match load_data(&config, &mut data).and_then(|d| Session::start(&config, d)) {
+                None => match start(&config, &mut data) {
                     Ok(s) => session = Some(s),
                     Err(error) => {
                         log(&error);
@@ -271,6 +302,167 @@ impl Session {
         n::set_ped_can_ragdoll(self.ped, true);
         n::set_entity_coords(self.ped, landing);
         n::notify("SkateGTA: off board");
+    }
+}
+
+/// Frontend (pad-native) controls in Skate 3 gameplay action order.
+const FRONTEND: i32 = 2;
+const PAD_ACTIONS: [(i32, f32); 18] = [
+    (218, 1.0),  // left stick X
+    (219, -1.0), // left stick Y (GTA: down positive)
+    (209, 1.0),  // L3
+    (220, 1.0),  // right stick X
+    (221, -1.0), // right stick Y
+    (210, 1.0),  // R3
+    (207, 1.0),  // LT
+    (208, 1.0),  // RT
+    (205, 1.0),  // LB
+    (206, 1.0),  // RB
+    (172, 1.0),  // d-pad up
+    (173, 1.0),  // d-pad down
+    (174, 1.0),  // d-pad left
+    (175, 1.0),  // d-pad right
+    (203, 1.0),  // X
+    (204, 1.0),  // Y
+    (201, 1.0),  // A
+    (202, 1.0),  // B
+];
+const LEAVE: i32 = 217; // Back / Select
+
+fn read_pad() -> [f32; 18] {
+    PAD_ACTIONS.map(|(action, sign)| {
+        let v = n::get_disabled_control_normal_in(FRONTEND, action) * sign;
+        if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
+    })
+}
+
+struct RideSession {
+    ride: Ride,
+    ped: n::Entity,
+    prop: Option<n::Entity>,
+    probe: GtaProbe,
+    cam: Option<n::Cam>,
+}
+
+impl RideSession {
+    fn start(config: &Config, root: &std::path::Path) -> Result<Self, String> {
+        let ped = n::player_ped_id();
+        if n::is_entity_dead(ped) || n::is_ped_in_any_vehicle(ped) {
+            return Err("get out of the vehicle first".into());
+        }
+        let position = n::get_entity_coords(ped);
+        let heading = n::get_entity_heading(ped);
+        let mut probe = GtaProbe { flags: config.probe_flags, ignore: ped };
+        let ground = probe
+            .down(position.x, position.y, position.z + 1.0, position.z - 3.0)
+            .ok_or("no ground under the player")?;
+        log(&format!("Skate 3 data: {}", root.display()));
+        let ride = Ride::start(
+            root,
+            config.mode,
+            GtaVec::new(position.x, position.y, ground),
+            heading,
+            config.patch,
+            &mut probe,
+        )?;
+        let prop = spawn_prop(config, ride.deck_position());
+        n::freeze_entity_position(ped, true);
+        n::set_ped_can_ragdoll(ped, false);
+        let cam = config.skate_camera.then(|| {
+            let cam = n::create_cam();
+            n::set_cam_active(cam, true);
+            n::render_script_cams(true);
+            cam
+        });
+        let mut session = Self { ride, ped, prop, probe, cam };
+        session.present(config);
+        n::notify("SkateGTA: Skate 3 on");
+        Ok(session)
+    }
+
+    fn update(&mut self, config: &Config) -> Result<(), String> {
+        if !n::does_entity_exist(self.ped) || n::is_entity_dead(self.ped) {
+            return Err(String::new());
+        }
+        n::disable_all_control_actions(0);
+        if n::is_disabled_control_just_pressed_in(FRONTEND, LEAVE) {
+            return Err(String::new());
+        }
+        let elapsed = std::time::Duration::from_secs_f32(n::get_frame_time().clamp(0.0, 0.25));
+        self.ride
+            .advance(elapsed, 4, read_pad(), &mut self.probe)
+            .map_err(|e| format!("gameplay stopped: {e}"))?;
+        self.present(config);
+        Ok(())
+    }
+
+    fn present(&mut self, config: &Config) {
+        let axes = self.ride.deck_axes();
+        let deck = self.ride.deck_position();
+        if let Some(prop) = self.prop {
+            let q = coords::quaternion_mul(coords::quaternion(&axes), coords::yaw_quaternion(config.model_yaw_offset));
+            n::set_entity_coords_no_offset(prop, deck.add(axes.up.scale(config.model_z_offset)));
+            n::set_entity_quaternion(prop, q);
+        }
+        let hips = self.ride.hips_position();
+        n::set_entity_coords_no_offset(self.ped, hips.add(GtaVec::new(0.0, 0.0, config.ped_z_offset - 1.0)));
+        n::set_entity_heading(self.ped, coords::heading_degrees(self.ride.skater_forward()));
+        if let (Some(cam), Some(view)) = (self.cam, self.ride.camera()) {
+            n::set_cam_coord(cam, view.position);
+            n::point_cam_at_coord(cam, view.position.add(view.forward.scale(10.0)));
+            n::set_cam_fov(cam, view.fov_degrees.clamp(10.0, 120.0));
+        }
+        if config.debug_draw {
+            self.draw_debug();
+        }
+        n::draw_text(
+            &format!(
+                "SkateGTA  {:?}  {:.1} km/h  [F5 / Back: off]",
+                self.ride.game.state(),
+                self.ride.game.board_speed() * 3.6
+            ),
+            0.01,
+            0.01,
+        );
+    }
+
+    fn draw_debug(&self) {
+        let parts = self.ride.game.board_parts();
+        let at = |id: BodyId| self.ride.frame.to_gta(parts[id.index()].translation);
+        let wheels = [BodyId::RightFrontWheel, BodyId::LeftFrontWheel, BodyId::LeftBackWheel, BodyId::RightBackWheel];
+        for i in 0..4 {
+            n::draw_line(at(wheels[i]), at(wheels[(i + 1) % 4]), [255, 200, 0, 255]);
+        }
+        let deck = self.ride.deck_position();
+        let axes = self.ride.deck_axes();
+        n::draw_line(deck, deck.add(axes.forward.scale(0.5)), [0, 160, 255, 255]);
+        for p in self.ride.game.skater_body_positions() {
+            let p = self.ride.frame.to_gta(p);
+            n::draw_line(p.add(GtaVec::new(-0.03, 0.0, 0.0)), p.add(GtaVec::new(0.03, 0.0, 0.0)), [255, 60, 200, 255]);
+            n::draw_line(p.add(GtaVec::new(0.0, 0.0, -0.03)), p.add(GtaVec::new(0.0, 0.0, 0.03)), [255, 60, 200, 255]);
+        }
+        for patch in &self.ride.patches.patches {
+            for t in &patch.triangles {
+                let v = t.triangle.vertices.map(|p| self.ride.frame.to_gta(p));
+                for i in 0..3 {
+                    n::draw_line(v[i], v[(i + 1) % 3], [80, 255, 80, 90]);
+                }
+            }
+        }
+    }
+
+    fn end(self) {
+        if let Some(cam) = self.cam {
+            n::render_script_cams(false);
+            n::destroy_cam(cam);
+        }
+        if let Some(prop) = self.prop {
+            n::delete_entity(prop);
+        }
+        n::freeze_entity_position(self.ped, false);
+        n::set_ped_can_ragdoll(self.ped, true);
+        n::set_entity_coords(self.ped, self.ride.hips_position());
+        n::notify("SkateGTA: Skate 3 off");
     }
 }
 

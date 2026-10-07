@@ -231,10 +231,10 @@ impl GamePhysics {
         self.world.set_external_queries(queries);
     }
     /// Host-supplied static world; grind splines come from the same host.
-    pub(crate) fn replace_world(&mut self, world: BoardWorld) {
-        self.offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())
-            .expect("an empty grab registry is valid for any static world");
+    pub(crate) fn replace_world(&mut self, world: BoardWorld) -> Result<(), String> {
+        self.offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())?;
         self.world = world;
+        Ok(())
     }
     pub(crate) fn clock_period(&self) -> std::time::Duration {
         self.clock.period()

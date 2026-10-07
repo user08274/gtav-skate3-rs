@@ -49,7 +49,7 @@ impl Mode {
 }
 
 /// Files the gameplay pipeline reads, relative to the converted assets root.
-pub const REQUIRED_FILES: [&str; 9] = [
+pub const REQUIRED_FILES: [&str; 16] = [
     "private/stock/skater-collections.json",
     "private/stock/physics-skeletons.json",
     "private/stock/data/anim/OnBoard.abin",
@@ -59,6 +59,13 @@ pub const REQUIRED_FILES: [&str; 9] = [
     "private/stock/data/script/camera/Default_cameragraph.stategraph",
     "private/stock/data/camera/1.shk",
     "private/stock/data/camera/2.shk",
+    "private/stock/data/joystick/skater.pat",
+    "private/stock/data/joystick/skater90.pat",
+    "private/stock/data/joystick/skaterN90.pat",
+    "private/stock/data/joystick/skater_air.pat",
+    "private/stock/data/joystick/skater_fingerflip.pat",
+    "private/stock/data/joystick/skaterls.pat",
+    "private/stock/data/joystick/skaterstep.pat",
 ];
 
 pub fn missing_files(root: &Path) -> Vec<&'static str> {
@@ -92,18 +99,18 @@ impl Game {
         .map_err(|e| e.to_string())?;
         let graphs = StockGraphs::load(root, &manifest)?;
         let difficulty = mode.difficulty();
-        let mut physics = GamePhysics::load_with_difficulty(root, None, difficulty)?;
-        physics.replace_world(BoardWorld::new(Vec::new()));
+        let physics = GamePhysics::load_with_difficulty(root, None, difficulty)?;
         let skater = SkaterRuntime::load(root, &graphs, &physics, difficulty.profile_key())?;
         let controls = PlayerControls::load(root)?;
         let camera = CameraRuntime::load(root)?;
         Ok(Self { physics, skater, controls, graphs, camera, accumulator: Duration::ZERO })
     }
 
-    /// Static collision near the skater, in skate space (metres, Y up). The
-    /// original test course is never used.
-    pub fn set_world(&mut self, world: BoardWorld) {
-        self.physics.replace_world(world);
+    /// Static collision near the skater, in skate space (metres, Y up), with
+    /// query metadata. Call before the first tick; the stock test course is
+    /// only a placeholder until then.
+    pub fn set_world(&mut self, world: BoardWorld) -> Result<(), String> {
+        self.physics.replace_world(world)
     }
 
     pub fn tick_period(&self) -> Duration {

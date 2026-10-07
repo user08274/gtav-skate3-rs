@@ -1,34 +1,28 @@
-//! Pose override without patching game code: right after GTA writes the
-//! player ped's last bone matrix, a vectored exception handler writes the
-//! Skate 3 pose over the game's.
+//! Pose override: right after GTA writes the player ped's last bone matrix,
+//! the Skate 3 pose is written over the game's.
 //!
 //! Two ways to notice that write:
-//! - `Mode::Hardware`: a CPU data breakpoint (debug register DR0) on the
-//!   last byte of the bone matrices, set on every game thread. One exception
-//!   per write.
-//! - `Mode::Guard`: guard pages, single-stepping every access to the page.
-//!   Costly (GTA copies the array byte by byte), but for a few frames it also
-//!   records who touches the matrices (code address, callers).
+//! - `Mode::Hook`: GTA copies the bones with its memcpy, which is hooked
+//!   (`hook.rs`); a copy covering the last bone byte triggers the pose.
+//! - `Mode::Guard`: guard pages and a vectored exception handler that
+//!   single-steps every access to the page. Slow (GTA copies the array byte
+//!   by byte), but for a few frames it also records who touches the
+//!   matrices (code address, callers).
 use std::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, EXCEPTION_SINGLE_STEP, INVALID_HANDLE_VALUE, STATUS_GUARD_PAGE_VIOLATION},
+    Foundation::{EXCEPTION_SINGLE_STEP, STATUS_GUARD_PAGE_VIOLATION},
     System::{
         Diagnostics::{
             Debug::{
-                AddVectoredExceptionHandler, GetThreadContext, RaiseException, RtlLookupFunctionEntry,
-                RtlVirtualUnwind, SetThreadContext, CONTEXT, CONTEXT_DEBUG_REGISTERS_AMD64, EXCEPTION_POINTERS,
+                AddVectoredExceptionHandler, RtlLookupFunctionEntry, RtlVirtualUnwind, CONTEXT, EXCEPTION_POINTERS,
                 UNW_FLAG_NHANDLER,
             },
-            ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32},
         },
         Memory::{VirtualProtect, PAGE_GUARD, PAGE_PROTECTION_FLAGS, PAGE_READWRITE},
-        Threading::{
-            GetCurrentProcessId, GetCurrentThreadId, OpenThread, ResumeThread, SuspendThread, THREAD_GET_CONTEXT,
-            THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
-        },
+        Threading::GetCurrentThreadId,
     },
 };
 
@@ -49,6 +43,9 @@ const STEP_APPLY: u8 = 2;
 const THREADS: usize = 256;
 static STEP_THREAD: [AtomicU32; THREADS] = [const { AtomicU32::new(0) }; THREADS];
 static STEP_FLAGS: [AtomicU32; THREADS] = [const { AtomicU32::new(0) }; THREADS];
+/// Last recorded (code address, bone) per thread: a byte-wise copy of one
+/// matrix is recorded once, not 64 times.
+static LAST_RECORD: [AtomicU64; THREADS] = [const { AtomicU64::new(0) }; THREADS];
 
 fn step_slot() -> Option<usize> {
     let me = unsafe { GetCurrentThreadId() };
@@ -133,19 +130,17 @@ static GAME_END: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    Hardware,
+    Hook,
     Guard,
 }
 
-static HARDWARE: AtomicBool = AtomicBool::new(false);
-/// Address DR0 watches (0 = none) and the hits since the last read.
-static BREAK_AT: AtomicUsize = AtomicUsize::new(0);
-static HITS: AtomicU32 = AtomicU32::new(0);
-/// Exception the script raises to set its own thread's debug registers.
-const SET_OWN_DEBUG_REGISTERS: u32 = 0xE053_4B33;
-/// DR7: local enable of DR0, break on data writes, 1-byte length.
-const DR7_DR0_MASK: u64 = 0b11 | (0xF << 16);
-const DR7_DR0_WRITE_1: u64 = 0b01 | (0b01 << 16);
+static HOOKED: AtomicBool = AtomicBool::new(false);
+/// Last byte of the bone matrices (0 = none): a copy covering it ends the
+/// game's bone write.
+static LAST_BYTE: AtomicUsize = AtomicUsize::new(0);
+/// Hooked copies since the last read: covering the last bone / touching the array.
+static COPIES_LAST: AtomicU32 = AtomicU32::new(0);
+static COPIES_ANY: AtomicU32 = AtomicU32::new(0);
 
 /// Rows X, Y, Z, position (xyz each) per bone; NaN marks "leave as is".
 struct PoseBuffer(UnsafeCell<[[f32; 12]; MAX_BONES]>);
@@ -221,7 +216,7 @@ pub fn start(
     POSE_READY.store(false, SeqCst);
     NEXT.store(0, SeqCst);
     FRAME.store(0, SeqCst);
-    if HANDLER.load(SeqCst) == 0 {
+    if mode == Mode::Guard && HANDLER.load(SeqCst) == 0 {
         let handle = unsafe { AddVectoredExceptionHandler(1, Some(handler)) };
         if handle.is_null() {
             return Err("AddVectoredExceptionHandler failed".into());
@@ -229,112 +224,38 @@ pub fn start(
         HANDLER.store(handle as usize, SeqCst);
     }
     WATCHING.store(true, SeqCst);
-    HARDWARE.store(mode == Mode::Hardware, SeqCst);
-    if mode == Mode::Hardware {
-        // The pose never writes the last byte (a w component), so the
-        // breakpoint only ever fires on the game's own writes.
-        BREAK_AT.store(objects as usize + count * MATRIX - 1, SeqCst);
-        HITS.store(0, SeqCst);
-        if set_debug_registers() == 0 {
-            return Err("could not set a breakpoint on any game thread".into());
-        }
+    HOOKED.store(mode == Mode::Hook, SeqCst);
+    if mode == Mode::Hook {
+        LAST_BYTE.store(objects as usize + count * MATRIX - 1, SeqCst);
+        let image = unsafe { std::slice::from_raw_parts(game.0 as *const u8, game.1 - game.0) };
+        super::hook::install(image, after_copy)?;
     }
     Ok(())
 }
 
-/// Debug-register state of every thread of the process, as last set.
-static DEBUG_THREADS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
-
-#[repr(C, align(16))]
-struct AlignedContext(CONTEXT);
-
-fn configure(context: &mut CONTEXT, address: usize) {
-    context.Dr7 &= !DR7_DR0_MASK;
-    if address != 0 {
-        context.Dr0 = address as u64;
-        context.Dr7 |= DR7_DR0_WRITE_1;
-    } else {
-        context.Dr0 = 0;
+/// Runs after every GTA memcpy; must stay tiny.
+fn after_copy(dst: usize, len: usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let last = LAST_BYTE.load(Relaxed);
+    if last == 0 || dst > last || len == 0 {
+        return;
+    }
+    let start = OBJECTS.load(Relaxed);
+    if dst.wrapping_add(len) <= start {
+        return;
+    }
+    COPIES_ANY.fetch_add(1, Relaxed);
+    if dst.wrapping_add(len) > last {
+        COPIES_LAST.fetch_add(1, Relaxed);
+        if OVERRIDE.load(Relaxed) && WATCHING.load(Relaxed) {
+            apply_pose();
+        }
     }
 }
 
-fn set_thread(thread: u32, address: usize) -> bool {
-    if thread == unsafe { GetCurrentThreadId() } {
-        // A thread cannot set its own context; the handler does it.
-        let argument = [address];
-        unsafe { RaiseException(SET_OWN_DEBUG_REGISTERS, 0, 1, argument.as_ptr()) };
-        return true;
-    }
-    unsafe {
-        let handle = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, 0, thread);
-        if handle.is_null() {
-            return false;
-        }
-        let mut ok = false;
-        if SuspendThread(handle) != u32::MAX {
-            let mut context: AlignedContext = std::mem::zeroed();
-            context.0.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
-            if GetThreadContext(handle, &mut context.0) != 0 {
-                configure(&mut context.0, address);
-                context.0.ContextFlags = CONTEXT_DEBUG_REGISTERS_AMD64;
-                ok = SetThreadContext(handle, &context.0) != 0;
-            }
-            ResumeThread(handle);
-        }
-        CloseHandle(handle);
-        ok
-    }
-}
-
-fn process_threads() -> Vec<u32> {
-    let mut out = Vec::new();
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if snapshot == INVALID_HANDLE_VALUE {
-            return out;
-        }
-        let me = GetCurrentProcessId();
-        let mut entry: THREADENTRY32 = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-        let mut more = Thread32First(snapshot, &mut entry) != 0;
-        while more {
-            if entry.th32OwnerProcessID == me {
-                out.push(entry.th32ThreadID);
-            }
-            more = Thread32Next(snapshot, &mut entry) != 0;
-        }
-        CloseHandle(snapshot);
-    }
-    out
-}
-
-/// Sets the breakpoint on threads that do not have it yet (new threads
-/// appear over time); returns how many threads carry it.
-pub fn set_debug_registers() -> usize {
-    let address = BREAK_AT.load(SeqCst);
-    let mut done = DEBUG_THREADS.lock().unwrap_or_else(|e| e.into_inner());
-    let alive = process_threads();
-    done.retain(|t| alive.contains(t));
-    if address == 0 || !HARDWARE.load(SeqCst) {
-        return 0;
-    }
-    for thread in alive {
-        if !done.contains(&thread) && set_thread(thread, address) {
-            done.push(thread);
-        }
-    }
-    done.len()
-}
-
-fn clear_debug_registers() {
-    let mut done = DEBUG_THREADS.lock().unwrap_or_else(|e| e.into_inner());
-    for thread in done.drain(..) {
-        set_thread(thread, 0);
-    }
-}
-
-pub fn hits() -> u32 {
-    HITS.swap(0, SeqCst)
+/// Hooked copies (covering the last bone, touching the bones at all) since the last call.
+pub fn copies() -> (u32, u32) {
+    (COPIES_LAST.swap(0, SeqCst), COPIES_ANY.swap(0, SeqCst))
 }
 
 /// Stops guarding. The handler stays installed and keeps the last ranges,
@@ -343,10 +264,8 @@ pub fn stop() {
     WATCHING.store(false, SeqCst);
     ARMED.store(false, SeqCst);
     protect(false);
-    if HARDWARE.swap(false, SeqCst) {
-        clear_debug_registers();
-        BREAK_AT.store(0, SeqCst);
-    }
+    LAST_BYTE.store(0, SeqCst);
+    HOOKED.store(false, SeqCst);
 }
 
 pub fn active() -> bool {
@@ -362,7 +281,7 @@ pub fn disarm() {
 
 /// Guards the matrices until the next `disarm`; `probe` records accesses.
 pub fn arm(frame: u32, probe: bool) {
-    if !active() || HARDWARE.load(SeqCst) {
+    if !active() || HOOKED.load(SeqCst) {
         return;
     }
     if PROBING.load(SeqCst) && !probe {
@@ -532,7 +451,10 @@ unsafe extern "system" fn handler(info: *mut EXCEPTION_POINTERS) -> i32 {
             }
             let offset = address - start;
             if PROBING.load(SeqCst) {
-                record(context, write, array, offset);
+                let key = context.Rip ^ ((offset / MATRIX) as u64) << 48 ^ (array as u64) << 60 ^ (write as u64) << 61;
+                if LAST_RECORD[slot].swap(key, SeqCst) != key {
+                    record(context, write, array, offset);
+                }
             }
             let last = len - MATRIX;
             let rip = context.Rip as usize;
@@ -546,25 +468,10 @@ unsafe extern "system" fn handler(info: *mut EXCEPTION_POINTERS) -> i32 {
         context.EFlags |= TRAP_FLAG;
         return CONTINUE_EXECUTION;
     }
-    if exception.ExceptionCode as u32 == SET_OWN_DEBUG_REGISTERS {
-        configure(context, exception.ExceptionInformation[0]);
-        context.ContextFlags |= CONTEXT_DEBUG_REGISTERS_AMD64;
-        return CONTINUE_EXECUTION;
-    }
     if exception.ExceptionCode == EXCEPTION_SINGLE_STEP {
         let Some(slot) = step_slot() else { return CONTINUE_SEARCH };
         let step = STEP_FLAGS[slot].swap(0, SeqCst) as u8;
         if step == 0 {
-            // DR0 hit: the game just wrote the last bone byte.
-            let address = BREAK_AT.load(SeqCst);
-            if context.Dr6 & 1 != 0 && address != 0 && context.Dr0 == address as u64 {
-                context.Dr6 = 0;
-                HITS.fetch_add(1, SeqCst);
-                if OVERRIDE.load(SeqCst) && WATCHING.load(SeqCst) {
-                    apply_pose();
-                }
-                return CONTINUE_EXECUTION;
-            }
             return CONTINUE_SEARCH;
         }
         if step & STEP_APPLY != 0 && ARMED.load(SeqCst) {

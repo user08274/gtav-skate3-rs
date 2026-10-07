@@ -5,8 +5,8 @@ use std::path::PathBuf;
 /// How the Skate 3 pose reaches the ped's bones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoseMode {
-    /// Right after GTA's bone write, noticed by a CPU data breakpoint.
-    Hardware,
+    /// Right after GTA copies the bones, through a hook on its memcpy.
+    Hook,
     /// Right after GTA's bone write, noticed by guard pages (slow, logs who writes).
     Guard,
     /// From the script only; GTA overwrites it.
@@ -57,7 +57,7 @@ impl Default for Config {
             ped_pose: true,
             ped_freeze: true,
             hud: true,
-            pose_mode: PoseMode::Hardware,
+            pose_mode: PoseMode::Hook,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -98,11 +98,11 @@ PedPose = 1
 DebugBody = 0
 ; 1 = freeze the ped in place; 0 = keep it live with gravity and collision off
 PedFreeze = 1
-; How the pose reaches the ped: hardware = written right after GTA's own bone
-; update, noticed by a CPU data breakpoint; guard = the same with guard pages
-; (slow, logs which GTA code writes the bones); script = from the script only
-; (GTA overwrites it)
-PedPoseMode = hardware
+; How the pose reaches the ped: hook = written right after GTA copies the
+; bones (a hook on GTA's memcpy); guard = the same noticed with guard pages
+; (slow, logs which GTA code touches the bones); script = from the script
+; only (GTA overwrites it)
+PedPoseMode = hook
 ; The original Skate 3 trick and score HUD (assets\\private\\hud)
 Hud = 1
 
@@ -164,10 +164,10 @@ impl Config {
                 "pedfreeze" => c.ped_freeze = flag()?,
                 "hud" => c.hud = flag()?,
                 "pedposemode" => c.pose_mode = match value.to_ascii_lowercase().as_str() {
-                    "hardware" => PoseMode::Hardware,
+                    "hook" => PoseMode::Hook,
                     "guard" => PoseMode::Guard,
                     "script" => PoseMode::Script,
-                    _ => return Err(err("must be hardware, guard or script")),
+                    _ => return Err(err("must be hook, guard or script")),
                 },
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,

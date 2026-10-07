@@ -3,6 +3,7 @@
 mod hud;
 mod natives;
 mod shv;
+mod hook;
 mod skeleton;
 mod watch;
 
@@ -31,7 +32,7 @@ use windows_sys::Win32::{
 static MODULE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[unsafe(no_mangle)]
-pub extern "system" fn DllMain(module: HMODULE, reason: u32, _reserved: *mut core::ffi::c_void) -> i32 {
+pub extern "system" fn DllMain(module: HMODULE, reason: u32, reserved: *mut core::ffi::c_void) -> i32 {
     match reason {
         DLL_PROCESS_ATTACH => {
             MODULE.store(module, Ordering::SeqCst);
@@ -40,7 +41,14 @@ pub extern "system" fn DllMain(module: HMODULE, reason: u32, _reserved: *mut cor
                 return 0;
             }
         }
-        DLL_PROCESS_DETACH => shv::unregister(module),
+        DLL_PROCESS_DETACH => {
+            shv::unregister(module);
+            // Unloaded while the game keeps running: memcpy must not jump
+            // into freed code. (At process exit nothing runs any more.)
+            if reserved.is_null() {
+                hook::uninstall();
+            }
+        }
         _ => {}
     }
     1
@@ -368,7 +376,7 @@ impl Poser {
     fn new(ped: n::Entity, mode: config::PoseMode) -> Result<Self, String> {
         let skeleton = skeleton::PedSkeleton::find(ped)?;
         let watch = match mode {
-            config::PoseMode::Hardware => Some(watch::Mode::Hardware),
+            config::PoseMode::Hook => Some(watch::Mode::Hook),
             config::PoseMode::Guard => Some(watch::Mode::Guard),
             config::PoseMode::Script => None,
         };
@@ -406,15 +414,11 @@ impl Poser {
                 log(&line);
             }
         }
-        if self.watch == Some(watch::Mode::Hardware) && tick % 60 == 59 {
-            // Threads started since the last pass need the breakpoint too.
-            watch::set_debug_registers();
-        }
-        if self.watch == Some(watch::Mode::Hardware) && (tick < 8 || tick % 120 == 0) {
+        if self.watch == Some(watch::Mode::Hook) && (tick < 8 || tick % 120 == 0) {
+            let (last, any) = watch::copies();
             log(&format!(
-                "Ped pose watch tick {tick}: {} breakpoint hits since last tick, {} threads, frame {:.1} ms",
-                watch::hits(),
-                watch::set_debug_registers(),
+                "Ped pose hook tick {tick}: {last} bone copies ending at the last bone ({any} touching the bones), {} overrides since last log, frame {:.1} ms",
+                watch::applied(),
                 n::get_frame_time() * 1000.0
             ));
         }

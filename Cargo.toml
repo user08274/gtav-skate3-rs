@@ -1,5 +1,5 @@
 [workspace]
-members = ["skate-gta"]
+members = ["skate-gta", "skate-gameplay", "bevy-shim"]
 resolver = "3"
 
 [workspace.package]

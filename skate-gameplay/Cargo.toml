@@ -1,0 +1,22 @@
+[package]
+name = "skate-gameplay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Skate 3 Rust Engine gameplay (riding, tricks, graphs, skater body) without Bevy."
+
+[dependencies]
+bevy = { path = "../bevy-shim" }
+skate-core.workspace = true
+skate-data.workspace = true
+skate-dynamics = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
+skate-net = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+half = "=2.7.1"
+blake3 = "=1.8.7"
+
+[lib]
+test = false
+doctest = false

@@ -2,6 +2,7 @@
 //! through ScriptHookV. GTA-independent modules are plain Rust and tested on
 //! any host; `gta` holds the ScriptHookV glue and only builds for Windows.
 pub mod assets;
+pub mod bigstack;
 pub mod colliders;
 pub mod config;
 pub mod coords;

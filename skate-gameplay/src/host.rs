@@ -72,6 +72,10 @@ pub fn missing_files(root: &Path) -> Vec<&'static str> {
     REQUIRED_FILES.iter().copied().filter(|f| !root.join(f).is_file()).collect()
 }
 
+/// HIPS in the stock PHYS_TPOSE physics skeleton (SKATEBOARD_ROOT, NECK1, NECK,
+/// LEFTHAND, ... HIPS); the hand drives index 3 and 7 the same way.
+const HIPS_PART: usize = 23;
+
 pub struct Game {
     physics: GamePhysics,
     skater: SkaterRuntime,
@@ -170,9 +174,13 @@ impl Game {
         (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
     }
 
-    /// Physical skater bodies (26 parts; 0 is the hips).
+    /// Physical skater bodies, in PHYS_TPOSE bone order (0 is SKATEBOARD_ROOT).
     pub fn skater_body_positions(&self) -> Vec<skate_core::math::Vector3> {
         self.skater.skeleton.bodies().iter().map(|b| b.rates.position).collect()
+    }
+
+    pub fn hips_position(&self) -> skate_core::math::Vector3 {
+        self.skater.skeleton.bodies()[HIPS_PART].rates.position
     }
 
     /// Animation root to world, native column-major 4x4 (skate space).

@@ -389,8 +389,10 @@ impl RideSession {
             return Err(String::new());
         }
         let elapsed = std::time::Duration::from_secs_f32(n::get_frame_time().clamp(0.0, 0.25));
+        let pad = read_pad();
+        self.ride.refresh_world(&mut self.probe)?;
         self.ride
-            .advance(elapsed, 4, read_pad(), &mut self.probe)
+            .advance_game(elapsed, 4, pad)
             .map_err(|e| format!("gameplay stopped: {e}"))?;
         self.present(config);
         Ok(())

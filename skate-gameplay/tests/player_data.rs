@@ -72,8 +72,9 @@ fn skater_stands_on_the_board_and_stays_on_the_ground() {
     run(&mut game, 180, |_| [0.0; 18]);
     assert_eq!(game.state(), PhysicalStateId::PhysicsGround);
     assert!(game.wheel_contacts() > 0);
-    let hips = game.skater_body_positions()[0];
-    assert!(hips.y > 0.5, "skater stands on the deck: hips at {hips:?}");
+    let hips = game.hips_position();
+    eprintln!("hips at {hips:?}");
+    assert!(hips.y > 0.6 && hips.y < 1.3, "skater stands on the deck: hips at {hips:?}");
     assert!(game.board_speed() < 0.2, "resting speed {}", game.board_speed());
 }
 
@@ -108,3 +109,62 @@ fn pushing_with_a_accelerates_and_the_stick_turns() {
     eprintln!("turned {:.1} degrees, state {:?}", turned.to_degrees(), game.state());
     assert!(turned > 0.2, "the left stick steers");
 }
+
+const RIGHT_STICK_Y: usize = 4;
+
+#[test]
+fn flicking_the_right_stick_ollies() {
+    let Some(root) = root() else { return };
+    let mut game = game(&root);
+    run(&mut game, 60, |_| [0.0; 18]);
+    run(&mut game, 120, |i| {
+        let mut pad = [0.0; 18];
+        pad[A] = if i % 60 < 30 { 1.0 } else { 0.0 };
+        pad
+    });
+    let ground_y = game.deck().translation.y;
+    let mut states = Vec::new();
+    let mut peak = ground_y;
+    // Pull the right stick down, then flick it up: the Skate ollie.
+    for i in 0..150u32 {
+        let mut pad = [0.0; 18];
+        pad[RIGHT_STICK_Y] = match i {
+            0..12 => -1.0,
+            12..16 => 1.0,
+            _ => 0.0,
+        };
+        game.tick(pad).unwrap();
+        states.push(game.state());
+        peak = peak.max(game.deck().translation.y);
+    }
+    eprintln!("ollie peak {:.2} m above the ground, states {:?}", peak - ground_y, {
+        let mut s = states.clone();
+        s.dedup();
+        s
+    });
+    assert!(peak - ground_y > 0.1, "the deck leaves the ground");
+}
+
+#[test]
+fn a_tick_fits_a_frame_and_a_script_fiber_stack() {
+    let Some(root) = root() else { return };
+    let worker = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            let mut game = game(&root);
+            run(&mut game, 60, |_| [0.0; 18]);
+            let start = std::time::Instant::now();
+            run(&mut game, 240, |i| {
+                let mut pad = [0.0; 18];
+                pad[A] = if i % 60 < 30 { 1.0 } else { 0.0 };
+                pad[LEFT_STICK_X] = 0.5;
+                pad
+            });
+            start.elapsed() / 240
+        })
+        .unwrap();
+    let per_tick = worker.join().expect("runs within a 1 MB stack");
+    eprintln!("per tick {per_tick:?}");
+    assert!(per_tick < std::time::Duration::from_millis(4));
+}
+

@@ -18,7 +18,8 @@ const FLOOR: RetailContactMaterial = RetailContactMaterial {
 };
 
 pub struct Ride {
-    pub game: Game,
+    /// Boxed: the gameplay state is far larger than a script fiber's stack.
+    pub game: Box<Game>,
     pub frame: Frame,
     pub patches: Patches,
 }
@@ -39,17 +40,20 @@ impl Ride {
         patch: PatchSettings,
         probe: &mut dyn GroundProbe,
     ) -> Result<Self, String> {
-        let game = Game::load(root, mode)?;
+        let game = crate::bigstack::run(|| Game::load(root, mode).map(Box::new))?;
         let frame = Frame::facing(ground.add(GtaVec::new(0.0, 0.0, -SPAWN_GROUND_HEIGHT)), heading_degrees);
         let mut ride = Self { game, frame, patches: Patches::new(patch, FLOOR) };
         ride.refresh_world(probe)?;
         Ok(ride)
     }
 
-    fn refresh_world(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
+    /// Probes GTA around the board and skater. Must run on the script fiber.
+    pub fn refresh_world(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
         let centers = [self.deck_position(), self.hips_position()];
         if self.patches.refresh(probe, &self.frame, &centers) {
-            self.game.set_world(crate::terrain::world_of(&self.patches.patches))?;
+            let world = crate::terrain::world_of(&self.patches.patches);
+            let game = &mut self.game;
+            crate::bigstack::run(move || game.set_world(world))?;
         }
         Ok(())
     }
@@ -62,7 +66,13 @@ impl Ride {
         probe: &mut dyn GroundProbe,
     ) -> Result<u32, String> {
         self.refresh_world(probe)?;
-        self.game.advance(elapsed, max_ticks, pad)
+        self.advance_game(elapsed, max_ticks, pad)
+    }
+
+    /// The gameplay ticks alone, on a large-stack thread. Calls no natives.
+    pub fn advance_game(&mut self, elapsed: Duration, max_ticks: u32, pad: [f32; 18]) -> Result<u32, String> {
+        let game = &mut self.game;
+        crate::bigstack::run(|| game.advance(elapsed, max_ticks, pad))
     }
 
     pub fn deck_position(&self) -> GtaVec {
@@ -74,11 +84,7 @@ impl Ride {
     }
 
     pub fn hips_position(&self) -> GtaVec {
-        self.game
-            .skater_body_positions()
-            .first()
-            .map(|p| self.frame.to_gta(*p))
-            .unwrap_or_else(|| self.deck_position())
+        self.frame.to_gta(self.game.hips_position())
     }
 
     /// Facing of the animated skater root (its native `At` column).

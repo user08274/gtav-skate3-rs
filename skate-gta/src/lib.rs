@@ -1,0 +1,14 @@
+//! SkateGTA: the Skate 3 Rust Engine board physics running inside GTA V
+//! through ScriptHookV. GTA-independent modules are plain Rust and tested on
+//! any host; `gta` holds the ScriptHookV glue and only builds for Windows.
+pub mod assets;
+pub mod colliders;
+pub mod config;
+pub mod coords;
+pub mod hash;
+pub mod settings;
+pub mod sim;
+pub mod terrain;
+
+#[cfg(windows)]
+mod gta;

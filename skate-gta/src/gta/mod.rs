@@ -418,9 +418,9 @@ impl Poser {
             }
         }
         if self.watch == Some(watch::Mode::Hook) && (tick < 8 || tick % 120 == 0) {
-            let (last, any) = watch::copies();
+            let [last, any, locals_last, locals] = watch::copies();
             log(&format!(
-                "Ped pose hook tick {tick}: {last} bone copies ending at the last bone ({any} touching the bones), {} overrides since last log, frame {:.1} ms",
+                "Ped pose hook tick {tick}: memcpy into final matrices {last} complete / {any} any, into locals {locals_last} complete / {locals} any; {} overrides since last log, frame {:.1} ms",
                 watch::applied(),
                 n::get_frame_time() * 1000.0
             ));
@@ -476,14 +476,20 @@ impl Poser {
         }
         skeleton.write(&pose);
         if self.watch.is_some() {
-            watch::set_pose(pose.iter().enumerate().map(|(i, b)| {
-                let v = [b.axes[0], b.axes[1], b.axes[2], b.position];
-                (i, std::array::from_fn(|k| match k % 3 {
-                    0 => v[k / 3].x,
-                    1 => v[k / 3].y,
-                    _ => v[k / 3].z,
-                }))
-            }));
+            let rows = |pose: &[crate::pose::BonePose]| -> Vec<[f32; 12]> {
+                pose.iter()
+                    .map(|b| {
+                        let v = [b.axes[0], b.axes[1], b.axes[2], b.position];
+                        std::array::from_fn(|k| match k % 3 {
+                            0 => v[k / 3].x,
+                            1 => v[k / 3].y,
+                            _ => v[k / 3].z,
+                        })
+                    })
+                    .collect()
+            };
+            let locals = crate::pose::to_locals(&pose, &skeleton.parents);
+            watch::set_pose(&rows(&pose), &rows(&locals));
             watch::arm(tick, PROBE_FRAMES.contains(&tick));
         }
         if self.frames.get() <= POSE_LOG_FRAMES {

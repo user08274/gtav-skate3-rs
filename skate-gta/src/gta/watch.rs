@@ -141,11 +141,15 @@ static LAST_BYTE: AtomicUsize = AtomicUsize::new(0);
 /// Hooked copies since the last read: covering the last bone / touching the array.
 static COPIES_LAST: AtomicU32 = AtomicU32::new(0);
 static COPIES_ANY: AtomicU32 = AtomicU32::new(0);
+static COPIES_LOCALS: AtomicU32 = AtomicU32::new(0);
+static COPIES_LOCALS_LAST: AtomicU32 = AtomicU32::new(0);
 
 /// Rows X, Y, Z, position (xyz each) per bone; NaN marks "leave as is".
 struct PoseBuffer(UnsafeCell<[[f32; 12]; MAX_BONES]>);
 unsafe impl Sync for PoseBuffer {}
 static POSE: PoseBuffer = PoseBuffer(UnsafeCell::new([[f32::NAN; 12]; MAX_BONES]));
+/// The same pose as parent-relative matrices, for the locals array.
+static LOCAL_POSE: PoseBuffer = PoseBuffer(UnsafeCell::new([[f32::NAN; 12]; MAX_BONES]));
 static POSE_BUSY: AtomicBool = AtomicBool::new(false);
 static POSE_READY: AtomicBool = AtomicBool::new(false);
 
@@ -233,29 +237,45 @@ pub fn start(
     Ok(())
 }
 
-/// Runs after every GTA memcpy; must stay tiny.
+/// Runs after every GTA memcpy; must stay tiny. A copy that reaches the
+/// last bone of the locals (the animation result GTA turns into the final
+/// matrices) gets the Skate 3 locals; one reaching the last final matrix
+/// gets the final pose.
 fn after_copy(dst: usize, len: usize) {
     use std::sync::atomic::Ordering::Relaxed;
     let last = LAST_BYTE.load(Relaxed);
-    if last == 0 || dst > last || len == 0 {
+    if last == 0 || len == 0 {
         return;
     }
-    let start = OBJECTS.load(Relaxed);
-    if dst.wrapping_add(len) <= start {
-        return;
-    }
-    COPIES_ANY.fetch_add(1, Relaxed);
-    if dst.wrapping_add(len) > last {
-        COPIES_LAST.fetch_add(1, Relaxed);
-        if OVERRIDE.load(Relaxed) && WATCHING.load(Relaxed) {
-            apply_pose();
+    let end = dst.wrapping_add(len);
+    let bytes = COUNT.load(Relaxed) * MATRIX;
+    for (start, locals) in [(OBJECTS.load(Relaxed), false), (LOCALS.load(Relaxed), true)] {
+        if start == 0 || dst >= start + bytes || end <= start {
+            continue;
+        }
+        let counter = if locals { &COPIES_LOCALS } else { &COPIES_ANY };
+        counter.fetch_add(1, Relaxed);
+        if end >= start + bytes && OVERRIDE.load(Relaxed) && WATCHING.load(Relaxed) {
+            if locals {
+                COPIES_LOCALS_LAST.fetch_add(1, Relaxed);
+                apply(&LOCAL_POSE, start);
+            } else {
+                COPIES_LAST.fetch_add(1, Relaxed);
+                apply(&POSE, start);
+            }
         }
     }
 }
 
-/// Hooked copies (covering the last bone, touching the bones at all) since the last call.
-pub fn copies() -> (u32, u32) {
-    (COPIES_LAST.swap(0, SeqCst), COPIES_ANY.swap(0, SeqCst))
+/// Hooked copies since the last call: into the final matrices (reaching the
+/// last bone, any) and into the locals (reaching the last bone, any).
+pub fn copies() -> [u32; 4] {
+    [
+        COPIES_LAST.swap(0, SeqCst),
+        COPIES_ANY.swap(0, SeqCst),
+        COPIES_LOCALS_LAST.swap(0, SeqCst),
+        COPIES_LOCALS.swap(0, SeqCst),
+    ]
 }
 
 /// Stops guarding. The handler stays installed and keeps the last ranges,
@@ -296,14 +316,14 @@ pub fn arm(frame: u32, probe: bool) {
 }
 
 /// The pose to put over the game's after its last bone write.
-pub fn set_pose(rows: impl Iterator<Item = (usize, [f32; 12])>) {
+pub fn set_pose(objects: &[[f32; 12]], locals: &[[f32; 12]]) {
     while POSE_BUSY.swap(true, SeqCst) {
         std::hint::spin_loop();
     }
-    let pose = unsafe { &mut *POSE.0.get() };
-    for (i, row) in rows {
-        if i < MAX_BONES {
-            pose[i] = row;
+    for (buffer, rows) in [(&POSE, objects), (&LOCAL_POSE, locals)] {
+        let pose = unsafe { &mut *buffer.0.get() };
+        for (slot, row) in pose.iter_mut().zip(rows) {
+            *slot = *row;
         }
     }
     POSE_BUSY.store(false, SeqCst);
@@ -358,12 +378,16 @@ pub fn function_bounds(address: u64) -> Option<(u64, u64)> {
 }
 
 fn apply_pose() {
-    if !POSE_READY.load(SeqCst) || POSE_BUSY.swap(true, SeqCst) {
+    apply(&POSE, OBJECTS.load(SeqCst));
+}
+
+fn apply(buffer: &PoseBuffer, target: usize) {
+    if target == 0 || !POSE_READY.load(SeqCst) || POSE_BUSY.swap(true, SeqCst) {
         return;
     }
-    let objects = OBJECTS.load(SeqCst) as *mut f32;
+    let objects = target as *mut f32;
     let count = COUNT.load(SeqCst);
-    let pose = unsafe { &*POSE.0.get() };
+    let pose = unsafe { &*buffer.0.get() };
     for (i, row) in pose.iter().enumerate().take(count) {
         if row.iter().any(|v| !v.is_finite()) {
             continue;

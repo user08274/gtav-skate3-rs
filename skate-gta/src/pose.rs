@@ -257,9 +257,47 @@ impl Rig {
     }
 }
 
+/// Parent-relative matrices of an entity-relative pose: what GTA keeps as a
+/// skeleton's "locals" and turns back into the entity-relative ones. Axes
+/// are taken as orthonormal (no scale), roots stay as they are.
+pub fn to_locals(pose: &[BonePose], parents: &[i32]) -> Vec<BonePose> {
+    pose.iter()
+        .enumerate()
+        .map(|(i, bone)| match parents.get(i).copied().filter(|&p| p >= 0 && (p as usize) < pose.len()) {
+            None => *bone,
+            Some(p) => {
+                let parent = &pose[p as usize];
+                let local = |v: GtaVec| GtaVec::new(dot(v, parent.axes[0]), dot(v, parent.axes[1]), dot(v, parent.axes[2]));
+                BonePose { axes: bone.axes.map(local), position: local(bone.position.sub(parent.position)) }
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locals_compose_back_into_the_pose() {
+        // Root turned 90 degrees about Z; child 1 m along the root's X, tilted.
+        let (s, c) = (0.3f32.sin(), 0.3f32.cos());
+        let root = BonePose { axes: [v(0., 1., 0.), v(-1., 0., 0.), v(0., 0., 1.)], position: v(1., 2., 3.) };
+        let child = BonePose { axes: [v(0., c, s), v(-1., 0., 0.), v(0., -s, c)], position: v(1., 3., 3.) };
+        let locals = to_locals(&[root, child], &[-1, 0]);
+        assert_eq!(locals[0].position, root.position);
+        // Child sits 1 m along the parent's own X axis.
+        let p = locals[1].position;
+        assert!((p.x - 1.0).abs() < 1e-6 && p.y.abs() < 1e-6 && p.z.abs() < 1e-6, "{p:?}");
+        // Composing parent * local gives the child back.
+        let compose = |l: GtaVec| root.axes[0].scale(l.x).add(root.axes[1].scale(l.y)).add(root.axes[2].scale(l.z));
+        for k in 0..3 {
+            let back = compose(locals[1].axes[k]);
+            assert!(back.sub(child.axes[k]).x.abs() < 1e-6 && back.sub(child.axes[k]).y.abs() < 1e-6 && back.sub(child.axes[k]).z.abs() < 1e-6);
+        }
+        let back = compose(locals[1].position).add(root.position);
+        assert!(back.sub(child.position).x.abs() < 1e-6 && back.sub(child.position).y.abs() < 1e-6);
+    }
 
     fn v(x: f32, y: f32, z: f32) -> GtaVec {
         GtaVec::new(x, y, z)

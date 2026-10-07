@@ -83,6 +83,9 @@ cargo build --release
 # target/release/skate_gta.dll -> SkateGTA.asi
 
 cargo test   # тесты физики на синтетической земле
+
+# те же проверки на ваших сконвертированных данных Skate 3
+SKATE_GTA_ASSETS=<skate3rust>/data/installations/<id>/assets cargo test --test player_data
 ```
 
 ## Лицензия

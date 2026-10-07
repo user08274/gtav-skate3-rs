@@ -168,3 +168,28 @@ fn a_tick_fits_a_frame_and_a_script_fiber_stack() {
     assert!(per_tick < std::time::Duration::from_millis(4));
 }
 
+
+const Y: usize = 15;
+
+#[test]
+fn y_steps_off_the_board_and_back_on() {
+    let Some(root) = root() else { return };
+    let mut game = game(&root);
+    run(&mut game, 60, |_| [0.0; 18]);
+    let mut states = Vec::new();
+    let tap_y = |game: &mut Game, states: &mut Vec<_>| {
+        for i in 0..180u32 {
+            let mut pad = [0.0; 18];
+            pad[Y] = if i < 8 { 1.0 } else { 0.0 };
+            game.tick(pad).unwrap();
+            states.push(game.state());
+        }
+    };
+    tap_y(&mut game, &mut states);
+    let off = game.state();
+    let pose = game.render_pose().len();
+    tap_y(&mut game, &mut states);
+    states.dedup();
+    eprintln!("states {states:?}; after first Y {off:?}; posed bones {pose}");
+    assert!(states.iter().any(|s| matches!(s, PhysicalStateId::BipedGround | PhysicalStateId::OffBoardPushing)));
+}

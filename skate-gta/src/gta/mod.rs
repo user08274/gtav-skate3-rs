@@ -1,5 +1,6 @@
 //! ScriptHookV script: DllMain registration, the script fiber loop and one
 //! riding session (board prop, attached player, fixed-step simulation).
+mod hud;
 mod natives;
 mod shv;
 mod skeleton;
@@ -475,6 +476,9 @@ impl RideSession {
             n::render_script_cams(true);
             cam
         });
+        if let Some(error) = &ride.hud_error {
+            log(&format!("Skate 3 HUD unavailable: {error}"));
+        }
         let mut session = Self { ride, ped, prop, probe, cam, poser, draw_body };
         session.present(config);
         n::notify("SkateGTA: Skate 3 on");
@@ -492,9 +496,13 @@ impl RideSession {
         let elapsed = std::time::Duration::from_secs_f32(n::get_frame_time().clamp(0.0, 0.25));
         let pad = read_pad();
         self.ride.refresh_world(&mut self.probe)?;
+        let had_hud = self.ride.hud.is_some();
         self.ride
             .advance_game(elapsed, 4, pad)
             .map_err(|e| format!("gameplay stopped: {e}"))?;
+        if had_hud && self.ride.hud.is_none() {
+            log(self.ride.hud_error.as_deref().unwrap_or("Skate 3 HUD stopped"));
+        }
         self.present(config);
         Ok(())
     }
@@ -540,6 +548,9 @@ impl RideSession {
             0.01,
             0.01,
         );
+        if config.hud {
+            hud::with_painter(|p| p.draw(self.ride.hud.as_ref(), self.ride.hud_sprites()));
+        }
     }
 
     /// The Skate 3 skater and board as lines, in place of GTA models.
@@ -602,6 +613,7 @@ impl RideSession {
         n::set_ped_can_ragdoll(self.ped, true);
         n::set_entity_visible(self.ped, true);
         n::set_entity_coords(self.ped, self.ride.hips_position());
+        hud::with_painter(|p| p.clear());
         n::notify("SkateGTA: Skate 3 off");
     }
 }

@@ -20,6 +20,7 @@ pub struct Config {
     pub debug_body: bool,
     pub ped_pose: bool,
     pub ped_freeze: bool,
+    pub hud: bool,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -43,6 +44,7 @@ impl Default for Config {
             debug_body: false,
             ped_pose: true,
             ped_freeze: true,
+            hud: true,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -83,6 +85,8 @@ PedPose = 1
 DebugBody = 0
 ; 1 = freeze the ped in place; 0 = keep it live with gravity and collision off
 PedFreeze = 1
+; The original Skate 3 trick and score HUD (assets\\private\\hud)
+Hud = 1
 
 ; Board-only mode test controls
 PushForce = 40
@@ -140,6 +144,7 @@ impl Config {
                 "debugbody" => c.debug_body = flag()?,
                 "pedpose" => c.ped_pose = flag()?,
                 "pedfreeze" => c.ped_freeze = flag()?,
+                "hud" => c.hud = flag()?,
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,

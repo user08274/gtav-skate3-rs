@@ -151,6 +151,10 @@ pub fn draw_line(a: GtaVec, b: GtaVec, rgba: [u8; 4]) {
         rgba[0] as i32, rgba[1] as i32, rgba[2] as i32, rgba[3] as i32,
     );
 }
+/// Screen aspect ratio (width / height).
+pub fn get_aspect_ratio() -> f32 {
+    ret_f32(call!(0xF1307EF624A80D87, false))
+}
 pub fn get_frame_time() -> f32 {
     ret_f32(call!(0x15C40837039FFAF7))
 }

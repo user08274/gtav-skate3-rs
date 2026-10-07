@@ -16,6 +16,9 @@ pub struct Api {
     native_push64: unsafe extern "C" fn(u64),
     native_call: unsafe extern "C" fn() -> *mut u64,
     handle_address: unsafe extern "C" fn(i32) -> *mut u8,
+    create_texture: unsafe extern "C" fn(*const u8) -> i32,
+    #[allow(clippy::type_complexity)]
+    draw_texture: unsafe extern "C" fn(i32, i32, i32, i32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32),
 }
 
 // Function pointers into ScriptHookV; they are valid for the process lifetime.
@@ -50,6 +53,8 @@ pub fn load() -> Result<&'static Api, &'static str> {
         native_push64: resolve!(module, "?nativePush64@@YAX_K@Z"),
         native_call: resolve!(module, "?nativeCall@@YAPEA_KXZ"),
         handle_address: resolve!(module, "?getScriptHandleBaseAddress@@YAPEAEH@Z"),
+        create_texture: resolve!(module, "?createTexture@@YAHPEBD@Z"),
+        draw_texture: resolve!(module, "?drawTexture@@YAXHHHHMMMMMMMMMMMM@Z"),
     };
     Ok(API.get_or_init(|| api))
 }
@@ -78,6 +83,42 @@ pub fn wait(ms: u32) {
 /// Game object behind a script handle (CEntity* for entities), or null.
 pub fn handle_address(handle: i32) -> *mut u8 {
     unsafe { (api().handle_address)(handle) }
+}
+
+/// Loads an image file (PNG) as a screen texture; returns its id. Textures
+/// live until scripts are reloaded. Must run on a script fiber.
+pub fn create_texture(path: &std::path::Path) -> Result<i32, String> {
+    let text = path.to_str().ok_or("texture path is not valid text")?;
+    // ScriptHookV takes an ANSI path; keep to what survives that.
+    if !text.is_ascii() {
+        return Err(format!("texture path must be plain ASCII: {text}"));
+    }
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(0);
+    Ok(unsafe { (api().create_texture)(bytes.as_ptr()) })
+}
+
+/// One on-screen instance of a texture (see ScriptHookV's main.h).
+pub struct TextureDraw {
+    pub id: i32,
+    pub instance: i32,
+    pub level: i32,
+    pub time_ms: i32,
+    pub size: [f32; 2],
+    pub center: [f32; 2],
+    pub position: [f32; 2],
+    pub rotation: f32,
+    pub aspect: f32,
+    pub color: [f32; 4],
+}
+
+pub fn draw_texture(d: &TextureDraw) {
+    unsafe {
+        (api().draw_texture)(
+            d.id, d.instance, d.level, d.time_ms, d.size[0], d.size[1], d.center[0], d.center[1],
+            d.position[0], d.position[1], d.rotation, d.aspect, d.color[0], d.color[1], d.color[2], d.color[3],
+        )
+    }
 }
 
 /// Invoke a native by hash with 64-bit argument words.

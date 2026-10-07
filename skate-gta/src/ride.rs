@@ -7,7 +7,10 @@ use crate::{
     terrain::{GroundProbe, PatchSettings, Patches},
 };
 use skate_core::{math::Basis3, physics::contact::RetailContactMaterial};
-use skate_gameplay::host::{Game, Mode, SPAWN_GROUND_HEIGHT};
+use skate_gameplay::{
+    host::{Game, Mode, SPAWN_GROUND_HEIGHT},
+    hud::{Hud, Sprite},
+};
 use std::{path::Path, time::Duration};
 
 /// The original host's static floor material: zero friction and full
@@ -27,6 +30,10 @@ pub struct Ride {
     pub frame: Frame,
     pub patches: Patches,
     pub far: FarField,
+    /// The original scoring HUD; None when its files are missing or it failed.
+    pub hud: Option<Hud>,
+    pub hud_error: Option<String>,
+    hud_sprites: Vec<Sprite>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +54,10 @@ impl Ride {
         probe: &mut dyn GroundProbe,
     ) -> Result<Self, String> {
         let game = crate::bigstack::run(|| Game::load(root, mode).map(Box::new))?;
+        let (hud, hud_error) = match crate::bigstack::run(|| Hud::load(root, &game)) {
+            Ok(hud) => (Some(hud), None),
+            Err(error) => (None, Some(error)),
+        };
         let frame = Frame::facing(ground.add(GtaVec::new(0.0, 0.0, -SPAWN_GROUND_HEIGHT)), heading_degrees);
         let view = View::capture(&game, &frame);
         let mut ride = Self {
@@ -57,6 +68,9 @@ impl Ride {
             frame,
             patches: Patches::new(patch, FLOOR),
             far: FarField::new(FarSettings::default()),
+            hud,
+            hud_error,
+            hud_sprites: Vec::new(),
         };
         // Fill the whole far field once so the camera starts with full ground.
         let side = 2 * ride.far.settings.radius_cells as usize + 1;
@@ -106,23 +120,48 @@ impl Ride {
         if due == 0 {
             return Ok(0);
         }
-        let (game, frame) = (&mut self.game, &self.frame);
-        let (second_last, last) = crate::bigstack::run(move || {
+        let (game, frame, hud) = (&mut self.game, &self.frame, &mut self.hud);
+        let (second_last, last, sprites) = crate::bigstack::run(move || {
             let mut second_last = None;
             let mut last = None;
+            let mut hud_error = None;
             for _ in 0..due {
                 game.tick(pad)?;
+                if let Some(h) = hud.as_mut() {
+                    if let Err(error) = h.update(game) {
+                        hud_error = Some(error);
+                        *hud = None;
+                    }
+                }
                 second_last = last.take();
                 last = Some(View::capture(game, frame));
             }
-            Ok((second_last, last.expect("at least one tick ran")))
+            let sprites = match (hud.as_ref().map(|h| h.sprites()), hud_error) {
+                (_, Some(error)) | (Some(Err(error)), None) => Err(error),
+                (Some(Ok(sprites)), None) => Ok(sprites),
+                (None, None) => Ok(Vec::new()),
+            };
+            Ok((second_last, last.expect("at least one tick ran"), sprites))
         })?;
+        match sprites {
+            Ok(sprites) => self.hud_sprites = sprites,
+            Err(error) => {
+                self.hud = None;
+                self.hud_sprites.clear();
+                self.hud_error = Some(format!("Skate 3 HUD stopped: {error}"));
+            }
+        }
         self.previous = match second_last {
             Some(view) => view,
             None => std::mem::replace(&mut self.current, last.clone()),
         };
         self.current = last;
         Ok(due)
+    }
+
+    /// The HUD as of the last tick (it is not interpolated).
+    pub fn hud_sprites(&self) -> &[Sprite] {
+        &self.hud_sprites
     }
 
     /// Presentation between the last two ticks, by the unspent frame time.

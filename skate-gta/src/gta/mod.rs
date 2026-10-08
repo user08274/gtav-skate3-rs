@@ -555,6 +555,8 @@ struct RideSession {
     frames: u32,
     entities: entities::Entities,
     collide_entities: bool,
+    /// The Skate 3 board drawn on the physics board (`BoardModel = skate3`).
+    board_model: Option<std::sync::Arc<crate::board_model::BoardModel>>,
 }
 
 impl RideSession {
@@ -582,7 +584,13 @@ impl RideSession {
         ride.game.set_low_camera(config.low_camera);
         ride.grind_edges = config.grind_edges;
         ride.find_walls = config.collide_walls;
-        let prop = if config.board_model.eq_ignore_ascii_case("none") { None } else { spawn_prop(config, ride.deck_position()) };
+        let skate3_board = config.board_model.eq_ignore_ascii_case("skate3");
+        let board_model = skate3_board.then(|| load_board_model(root)).flatten();
+        let prop = if config.board_model.eq_ignore_ascii_case("none") || skate3_board {
+            None
+        } else {
+            spawn_prop(config, ride.deck_position())
+        };
         if config.ped_freeze {
             n::freeze_entity_position(ped, true);
         } else {
@@ -615,7 +623,7 @@ impl RideSession {
         if poser.is_none() {
             n::set_entity_visible(ped, false);
         }
-        let draw_body = config.debug_body || poser.is_none() || prop.is_none();
+        let draw_body = config.debug_body || poser.is_none() || (prop.is_none() && board_model.is_none());
         let cam = config.skate_camera.then(|| {
             let cam = n::create_cam();
             n::set_cam_active(cam, true);
@@ -636,6 +644,7 @@ impl RideSession {
             frames: 0,
             entities: Default::default(),
             collide_entities: config.collide_entities,
+            board_model,
         };
         session.present(config);
         n::notify(&format!("SkateGTA {BUILD}: Skate 3 on"));
@@ -724,8 +733,12 @@ impl RideSession {
             n::point_cam_at_coord(cam, camera.position.add(camera.forward.scale(10.0)));
             n::set_cam_fov(cam, camera.fov_degrees.clamp(10.0, 120.0));
         }
+        if let Some(model) = &self.board_model {
+            draw_board(model, &view, self.ride.game.bone_names());
+        }
         if self.draw_body {
-            self.draw_body(&view, config.debug_body || self.poser.is_none());
+            let board_lines = self.prop.is_none() && self.board_model.is_none();
+            self.draw_body(&view, config.debug_body || self.poser.is_none(), board_lines);
         }
         if config.debug_draw {
             self.draw_debug();
@@ -745,7 +758,7 @@ impl RideSession {
     }
 
     /// The Skate 3 skater and board as lines, in place of GTA models.
-    fn draw_body(&self, view: &crate::ride::View, skeleton: bool) {
+    fn draw_body(&self, view: &crate::ride::View, skeleton: bool, board_lines: bool) {
         const BONE: [u8; 4] = [255, 255, 255, 255];
         const BOARD: [u8; 4] = [255, 170, 0, 255];
         let names = self.ride.game.bone_names();
@@ -759,6 +772,9 @@ impl RideSession {
                 continue;
             }
             n::draw_line(p, view.bones[parent as usize].0, BONE);
+        }
+        if !board_lines {
+            return;
         }
         let axes = view.axes;
         let [width, length] = self.ride.game.deck_size();
@@ -826,6 +842,60 @@ impl RideSession {
         n::set_entity_coords(self.ped, self.ride.hips_position());
         hud::with_painter(|p| p.clear());
         n::notify("SkateGTA: Skate 3 off");
+    }
+}
+
+/// The Skate 3 board from the player's skater.glb, loaded once per game.
+fn load_board_model(root: &std::path::Path) -> Option<std::sync::Arc<crate::board_model::BoardModel>> {
+    static CACHE: std::sync::Mutex<Option<(PathBuf, std::sync::Arc<crate::board_model::BoardModel>)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((path, model)) = cache.as_ref() {
+        if path == root {
+            return Some(model.clone());
+        }
+    }
+    let path = root.join("private").join("skater.glb");
+    let loaded = std::fs::read(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|bytes| crate::board_model::BoardModel::load(&bytes))
+        .map(|m| m.simplified(0.012, &["SKATEBOARD_ROOT"]));
+    match loaded {
+        Ok(model) => {
+            log(&format!("Skate 3 board: {} triangles on {:?}", model.triangles.len(), model.bones));
+            let model = std::sync::Arc::new(model);
+            *cache = Some((root.to_path_buf(), model.clone()));
+            Some(model)
+        }
+        Err(error) => {
+            log(&format!("Skate 3 board model unavailable, drawing lines: {error}"));
+            None
+        }
+    }
+}
+
+/// Draws the board model on the render pose's board bones: flat-shaded
+/// triangles facing the camera, darker at night.
+fn draw_board(model: &crate::board_model::BoardModel, view: &crate::ride::View, names: &[String]) {
+    let frame = |bone: &str| {
+        let i = names.iter().position(|n| n == bone)?;
+        Some((view.bones.get(i)?.0, *view.bone_axes.get(i)?))
+    };
+    let camera = n::get_final_rendered_cam_coord();
+    let hour = n::get_clock_time();
+    // Full light 7-19 h, a quarter at night, linear over two hours.
+    let daylight = ((hour - 5.0) / 2.0).clamp(0.0, 1.0).min(((21.0 - hour) / 2.0).clamp(0.0, 1.0));
+    let brightness = 0.25 + 0.75 * daylight;
+    let light = GtaVec::new(0.3, -0.4, 0.85).normalized();
+    n::set_backface_culling(false);
+    for face in model.place(frame) {
+        let to_camera = camera.sub(face.corners[0]);
+        if face.normal.x * to_camera.x + face.normal.y * to_camera.y + face.normal.z * to_camera.z <= 0.0 {
+            continue;
+        }
+        let lit = face.normal.x * light.x + face.normal.y * light.y + face.normal.z * light.z;
+        let shade = (0.45 + 0.55 * lit.max(0.0)) * brightness;
+        let rgb = face.color.map(|c| (c * shade * 255.0).clamp(0.0, 255.0) as u8);
+        n::draw_poly(face.corners[0], face.corners[1], face.corners[2], [rgb[0], rgb[1], rgb[2], 255]);
     }
 }
 

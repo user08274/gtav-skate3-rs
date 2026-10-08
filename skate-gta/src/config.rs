@@ -47,7 +47,7 @@ impl Default for Config {
             skate3rust_dir: None,
             asset_root: None,
             toggle_key: 0x74, // F5
-            board_model: "none".into(),
+            board_model: "skate3".into(),
             model_yaw_offset: 0.0,
             model_z_offset: 0.0,
             ped_z_offset: 1.0,
@@ -81,10 +81,9 @@ Skate3RustDir = C:\\Games\\skate3rust
 
 ; Virtual-key code to get on/off the board (0x74 = F5)
 ToggleKey = 0x74
-; Object used as the board model, or none to draw the board as lines.
-; Vanilla GTA has no skateboard: e.g. replace p_defilied_ragdoll_01_s with a
-; skateboard .ydr (as SkateV does) and put that name here.
-BoardModel = none
+; Board model: skate3 = the Skate 3 board from your skater.glb (deck graphic,
+; trucks, spinning wheels), none = lines, or the name of a GTA object model.
+BoardModel = skate3
 ModelYawOffset = 0
 ModelZOffset = 0
 PedZOffset = 1.0

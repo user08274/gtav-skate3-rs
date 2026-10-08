@@ -359,6 +359,13 @@ fn read_pad() -> [f32; 18] {
 }
 
 /// Drives the player ped's skeleton with the Skate 3 pose.
+/// Skate 3 bone axes by name, turned into a ped model frame with `heading`.
+fn model_axes<'a>(view: &crate::ride::View, names: &'a [String], heading: f32) -> std::collections::HashMap<&'a str, [GtaVec; 3]> {
+    let (s, c) = heading.to_radians().sin_cos();
+    let turn = |d: GtaVec| GtaVec::new(d.x * c + d.y * s, -d.x * s + d.y * c, d.z);
+    names.iter().zip(&view.bone_axes).map(|(name, axes)| (name.as_str(), axes.map(turn))).collect()
+}
+
 struct Poser {
     rig: crate::pose::Rig,
     frames: std::cell::Cell<u32>,
@@ -473,14 +480,18 @@ impl Poser {
         };
         let joints: std::collections::HashMap<&str, GtaVec> =
             names.iter().zip(&view.bones).map(|(name, (p, _))| (name.as_str(), model(*p))).collect();
-        let pose = self.rig.solve(|name| joints.get(name).copied());
+        let axes = model_axes(view, names, heading);
+        let pose = self.rig.solve(|name| joints.get(name).copied(), |name| axes.get(name).copied());
         if matches!(tick, 150 | 300 | 450 | 600) {
             let mut list: Vec<String> = names
                 .iter()
                 .zip(&view.bones)
                 .map(|(name, (p, parent))| {
                     let q = model(*p);
-                    format!("{name} {parent} {:.5} {:.5} {:.5}", q.x, q.y, q.z)
+                    let a = axes.get(name.as_str()).map_or(String::new(), |a| {
+                        a.iter().map(|v| format!(" {:.4} {:.4} {:.4}", v.x, v.y, v.z)).collect()
+                    });
+                    format!("{name} {parent} {:.5} {:.5} {:.5}{a}", q.x, q.y, q.z)
                 })
                 .collect();
             list.sort();
@@ -584,6 +595,15 @@ impl RideSession {
         n::set_entity_collision(ped, false, false);
         let poser = if config.ped_pose {
             Poser::new(ped, config.pose_mode)
+                .map(|mut poser| {
+                    // Skate 3's spawn pose stands square like the ped at rest.
+                    let heading = coords::heading_degrees(n::get_entity_forward_vector(ped));
+                    let view = ride.view();
+                    let axes = model_axes(&view, ride.game.bone_names(), heading);
+                    let calibrated = poser.rig.calibrate(|name| axes.get(name).copied());
+                    log(&format!("Ped pose: {calibrated} spine/neck/head bones follow Skate 3 rotations"));
+                    poser
+                })
                 .inspect_err(|e| {
                     log(&format!("Ped pose unavailable: {e}"));
                     n::notify(&format!("SkateGTA: ped pose unavailable ({e}), showing the skeleton"));

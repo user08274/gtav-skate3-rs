@@ -320,6 +320,8 @@ pub struct View {
     pub wheels: [GtaVec; 4],
     /// World bone positions and parent indices (`Game::bone_names` order).
     pub bones: Vec<(GtaVec, i32)>,
+    /// World axes of the same bones (GTA space, Skate 3's bone frames).
+    pub bone_axes: Vec<[GtaVec; 3]>,
     pub hips: GtaVec,
     pub forward: GtaVec,
     pub camera: Option<CameraView>,
@@ -336,6 +338,7 @@ impl View {
             axes: frame.entity_axes(deck.basis),
             wheels: core::array::from_fn(|i| frame.to_gta(parts[i].translation)),
             bones: game.skeleton_world().into_iter().map(|(p, parent)| (frame.to_gta(p), parent)).collect(),
+            bone_axes: game.skeleton_world_axes().into_iter().map(|axes| axes.map(|a| frame.dir_to_gta(a))).collect(),
             hips: frame.to_gta(game.hips_position()),
             forward: frame.dir_to_gta(at),
             camera: game.camera_frame().map(|c| {
@@ -361,6 +364,15 @@ impl View {
         } else {
             b.bones.clone()
         };
+        let bone_axes = if a.bone_axes.len() == b.bone_axes.len() {
+            a.bone_axes
+                .iter()
+                .zip(&b.bone_axes)
+                .map(|(x, y)| std::array::from_fn(|k| x[k].lerp(y[k], t).normalized()))
+                .collect()
+        } else {
+            b.bone_axes.clone()
+        };
         let camera = match (a.camera, b.camera) {
             (Some(x), Some(y)) => Some(CameraView {
                 position: x.position.lerp(y.position, t),
@@ -374,6 +386,7 @@ impl View {
             axes,
             wheels: core::array::from_fn(|i| a.wheels[i].lerp(b.wheels[i], t)),
             bones,
+            bone_axes,
             hips: a.hips.lerp(b.hips, t),
             forward: a.forward.lerp(b.forward, t).normalized(),
             camera,

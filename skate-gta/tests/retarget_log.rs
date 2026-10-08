@@ -15,6 +15,8 @@ pub struct Dump {
     pub names: Vec<String>,
     /// Per logged tick: joint name -> (parent index in Skate order, model-space position).
     pub joints: Vec<(u32, HashMap<String, (i32, GtaVec)>)>,
+    /// Per logged tick: joint name -> model-space bone axes (newer logs only).
+    pub axes: Vec<HashMap<String, [GtaVec; 3]>>,
 }
 
 fn floats(it: &mut std::str::SplitWhitespace, n: usize) -> Vec<f32> {
@@ -26,6 +28,7 @@ pub fn parse(text: &str) -> Dump {
     let start = text.rfind("Ped pose mode:").expect("a ped pose run");
     let text = &text[start..];
     let (mut rest, mut parents, mut tags, mut names, mut joints) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut axes = Vec::new();
     for line in text.lines() {
         if let Some(body) = line.strip_prefix("Ped rest ") {
             let mut it = body.split_whitespace();
@@ -44,6 +47,7 @@ pub fn parse(text: &str) -> Dump {
             rest.push(BonePose { axes, position });
         } else if let Some(body) = line.strip_prefix("Skate joints tick ") {
             let (tick, list) = body.split_once(": ").unwrap();
+            let mut frames = HashMap::new();
             let map = list
                 .split("; ")
                 .map(|entry| {
@@ -51,13 +55,19 @@ pub fn parse(text: &str) -> Dump {
                     let name = it.next().unwrap().to_string();
                     let parent: i32 = it.next().unwrap().parse().unwrap();
                     let f = floats(&mut it, 3);
+                    let rest: Vec<f32> = it.map(|t| t.parse().unwrap()).collect();
+                    if rest.len() == 9 {
+                        let a = |k: usize| GtaVec::new(rest[k * 3], rest[k * 3 + 1], rest[k * 3 + 2]);
+                        frames.insert(name.clone(), [a(0), a(1), a(2)]);
+                    }
                     (name, (parent, GtaVec::new(f[0], f[1], f[2])))
                 })
                 .collect();
             joints.push((tick.parse().unwrap(), map));
+            axes.push(frames);
         }
     }
-    Dump { rest, parents, tags, names, joints }
+    Dump { rest, parents, tags, names, joints, axes }
 }
 
 pub fn rig(dump: &Dump) -> Rig {
@@ -144,7 +154,7 @@ fn replay_logged_retarget() {
         .filter_map(|n| dump.names.iter().position(|m| m == n))
         .collect();
     for (tick, joints) in &dump.joints {
-        let solved = rig.solve(|name| joints.get(name).map(|j| j.1));
+        let solved = rig.solve(|name| joints.get(name).map(|j| j.1), |_| None);
         let mut canvas = Canvas::new(900, 720);
         // Skate 3 joints.
         if let Some(names) = &skate_names {

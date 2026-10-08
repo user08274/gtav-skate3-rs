@@ -249,6 +249,23 @@ impl Game {
             .collect()
     }
 
+    /// Every animated bone's axes (columns) in skate world space, same order
+    /// as `skeleton_world`.
+    pub fn skeleton_world_axes(&self) -> Vec<[skate_core::math::Vector3; 3]> {
+        let root = self.skater.animated_skeleton.roots.animation_to_world;
+        self.skater
+            .render_pose
+            .iter()
+            .map(|m| {
+                core::array::from_fn(|k| {
+                    let a = m[k];
+                    let w = core::array::from_fn::<f32, 3, _>(|r| root[0][r] * a[0] + root[1][r] * a[1] + root[2][r] * a[2]);
+                    skate_core::math::Vector3::new(w[0], w[1], w[2])
+                })
+            })
+            .collect()
+    }
+
     /// Stock deck width and overall length (physicsdeck), metres.
     pub fn deck_size(&self) -> [f32; 2] {
         self.deck_size

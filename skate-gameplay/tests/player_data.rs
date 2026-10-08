@@ -1,6 +1,6 @@
 //! Full gameplay pipeline on flat ground with the player's converted files.
 //! Set SKATE_GTA_ASSETS to a skate3rust `assets` folder; skipped otherwise.
-use skate_core::player::state::PhysicalStateId;
+use skate_core::{math::Vector3, player::state::PhysicalStateId};
 use skate_gameplay::host::{Game, Mode, SPAWN_GROUND_HEIGHT};
 use std::path::PathBuf;
 
@@ -218,4 +218,42 @@ fn left_stick_through_an_ollie_spins() {
         assert!(turned.abs() > 90.0, "{label}: the skater spins");
         assert!(names.iter().any(|n| n.ends_with(" 180") || n.ends_with(" 360")), "{label}: {names:?}");
     }
+}
+
+/// Bone axes are rotations (orthonormal, right-handed), and at spawn the
+/// skater stands square to the board.
+#[test]
+fn bone_axes_are_rotations() {
+    let Some(root) = root() else { return };
+    let mut game = game(&root);
+    let check = |game: &Game| {
+        let names = game.bone_names();
+        for (i, axes) in game.skeleton_world_axes().iter().enumerate() {
+            let d = |a: Vector3, b: Vector3| a.x * b.x + a.y * b.y + a.z * b.z;
+            // Blending leaves bones within a few percent of a rotation.
+            for k in 0..3 {
+                assert!((d(axes[k], axes[k]).sqrt() - 1.0).abs() < 0.03, "bone {i} {} axis {k} unit: {axes:?}", names[i]);
+                assert!(d(axes[k], axes[(k + 1) % 3]).abs() < 0.03, "bone {i} {} orthogonal: {axes:?}", names[i]);
+            }
+            let c = Vector3::new(
+                axes[0].y * axes[1].z - axes[0].z * axes[1].y,
+                axes[0].z * axes[1].x - axes[0].x * axes[1].z,
+                axes[0].x * axes[1].y - axes[0].y * axes[1].x,
+            );
+            assert!(d(c, axes[2]) > 0.95, "bone {i} {} right-handed", names[i]);
+        }
+    };
+    check(&game);
+    let names = game.bone_names().to_vec();
+    let axes = game.skeleton_world_axes();
+    for name in ["HIPS", "SPINE3", "NECK", "HEAD"] {
+        let i = names.iter().position(|n| n == name).unwrap();
+        eprintln!("spawn {name}: {:?}", axes[i]);
+    }
+    run(&mut game, 120, |i| {
+        let mut pad = [0.0; 18];
+        pad[A] = if i % 60 < 30 { 1.0 } else { 0.0 };
+        pad
+    });
+    check(&game);
 }

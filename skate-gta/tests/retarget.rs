@@ -81,7 +81,7 @@ fn skater_pose_lands_on_a_gta_rig() {
         eprintln!("{k:12} {:?}", joints[k]);
     }
     let (rig, tags) = gta_rig();
-    let pose = rig.solve(|n| joints.get(n).copied());
+    let pose = rig.solve(|n| joints.get(n).copied(), |_| None);
     let at = |tag: i32| pose[tags.iter().position(|&t| t == tag).unwrap()].position;
     let (head, lfoot, rfoot, lhand) = (at(0x796E), at(0x3779), at(0xCC4D), at(0x49D9));
     eprintln!("GTA head {head:?} feet {lfoot:?} {rfoot:?} left hand {lhand:?}");

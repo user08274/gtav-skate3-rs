@@ -12,13 +12,17 @@ use skate_core::{
         collision::TriangleFeature,
         contact::RetailContactMaterial,
         drive_frames::RetailAffineTransform,
-        world_contact::triangle_from_volume,
     },
 };
 
 pub trait GroundProbe {
     /// First surface hit on the vertical segment from `top` down to `bottom`.
     fn down(&mut self, x: f32, y: f32, top: f32, bottom: f32) -> Option<f32>;
+
+    /// First surface hit on the segment `from` -> `to`: point and face normal.
+    fn toward(&mut self, _from: GtaVec, _to: GtaVec) -> Option<(GtaVec, GtaVec)> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -37,7 +41,8 @@ impl Default for PatchSettings {
             cells: 8,
             spacing: 0.4,
             probe_above: 1.5,
-            probe_below: 3.0,
+            // Deep enough to find the ground under a high jump.
+            probe_below: 50.0,
             resample_distance: 0.4,
             resample_ticks: 15,
         }
@@ -69,6 +74,10 @@ pub fn sample(
 ) -> Patch {
     let n = settings.cells + 1;
     let half = settings.cells as f32 * settings.spacing * 0.5;
+    // World-aligned grid: a resampled patch probes the same GTA points, so
+    // the surface under the wheels does not shift between rebuilds.
+    let snap = |v: f32| (v / settings.spacing).round() * settings.spacing;
+    let center = GtaVec::new(snap(center.x), snap(center.y), center.z);
     let mut samples = Vec::with_capacity(n * n);
     for j in 0..n {
         for i in 0..n {
@@ -83,19 +92,15 @@ pub fn sample(
             samples.push(hit.map(|z| GtaVec::new(x, y, z)));
         }
     }
-    let mut triangles = Vec::new();
+    let mut faces: Vec<[usize; 3]> = Vec::new();
     let mut emit = |i: usize, j: usize, size: usize| {
-        let corner = |di: usize, dj: usize| samples[(j + dj) * n + i + di];
-        let (Some(a), Some(b), Some(c), Some(d)) =
-            (corner(0, 0), corner(size, 0), corner(size, size), corner(0, size))
-        else {
+        let id = |di: usize, dj: usize| (j + dj) * n + i + di;
+        let quad = [id(0, 0), id(size, 0), id(size, size), id(0, size)];
+        if quad.iter().any(|&k| samples[k].is_none()) {
             return;
-        };
-        for tri in [[a, b, c], [a, c, d]] {
-            if let Some(t) = upward_triangle(tri.map(|p| frame.to_skate(p)), material) {
-                triangles.push(t);
-            }
         }
+        faces.push([quad[0], quad[1], quad[2]]);
+        faces.push([quad[0], quad[2], quad[3]]);
     };
     if settings.cells.is_power_of_two() {
         merge_planar(&samples, n, 0, 0, settings.cells, &mut emit);
@@ -106,12 +111,120 @@ pub fn sample(
             }
         }
     }
+    let triangles = build_triangles(&samples, faces, frame, material);
     Patch {
         center,
         samples,
         triangles,
         age_ticks: 0,
     }
+}
+
+/// Skate-space triangles with the adjacency data the original map loader
+/// derives (rw_collision_mesh ExtendedEdgeCosine / MakeEdgeCode): shared
+/// edges carry the cosine between the two faces, flat or concave seams lose
+/// their convex bit and vertices surrounded by coplanar faces are disabled,
+/// so wheels roll across seams instead of striking internal edges. Edges
+/// without a partner (patch borders, T-junctions of merged blocks) are flat.
+fn build_triangles(
+    samples: &[Option<GtaVec>],
+    faces: Vec<[usize; 3]>,
+    frame: &Frame,
+    material: RetailContactMaterial,
+) -> Vec<WorldTriangle> {
+    let points: Vec<Vector3> = samples
+        .iter()
+        .map(|s| s.map_or(Vector3::new(0.0, 0.0, 0.0), |p| frame.to_skate(p)))
+        .collect();
+    let mut upward = Vec::with_capacity(faces.len());
+    for face in faces {
+        if face.iter().any(|&k| samples[k].is_none()) {
+            continue;
+        }
+        let v = face.map(|k| points[k]);
+        let ordered = upward_vertices(v);
+        let face = if ordered[1].x == v[1].x && ordered[1].y == v[1].y && ordered[1].z == v[1].z {
+            face
+        } else {
+            [face[0], face[2], face[1]]
+        };
+        if normal(face.map(|k| points[k])).is_some_and(|n| n.y > 0.0) {
+            upward.push(face);
+        }
+    }
+    mesh_triangles(&points, &upward, material)
+}
+
+fn normal([a, b, c]: [Vector3; 3]) -> Option<Vector3> {
+    let e1 = Vector3::new(b.x - a.x, b.y - a.y, b.z - a.z);
+    let e2 = Vector3::new(c.x - a.x, c.y - a.y, c.z - a.z);
+    let n = Vector3::new(e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x);
+    let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
+    (len > 1e-9).then(|| Vector3::new(n.x / len, n.y / len, n.z / len))
+}
+
+/// Triangles of any orientation (normal = (b - a) x (c - a), facing out of
+/// a solid), with the shared-edge data described for `build_triangles`.
+pub fn mesh_triangles(points: &[Vector3], faces: &[[usize; 3]], material: RetailContactMaterial) -> Vec<WorldTriangle> {
+    let point = |k: usize| points[k];
+    let mut ids = Vec::with_capacity(faces.len());
+    let mut normals = Vec::with_capacity(faces.len());
+    for &face in faces {
+        if let Some(n) = normal(face.map(point)) {
+            ids.push(face);
+            normals.push(n);
+        }
+    }
+    let dot = |a: Vector3, b: Vector3| a.x * b.x + a.y * b.y + a.z * b.z;
+    let cross = |a: Vector3, b: Vector3| {
+        Vector3::new(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+    };
+    let mut cosines = vec![[1.0f32; 3]; ids.len()];
+    let mut flags = vec![TriangleFeature::ONE_SIDED | TriangleFeature::USE_EDGE_COSINES; ids.len()];
+    let mut open = std::collections::HashMap::<(usize, usize), (usize, usize)>::new();
+    for (i, face) in ids.iter().enumerate() {
+        for edge in 0..3 {
+            let (a, b) = (face[edge], face[(edge + 1) % 3]);
+            if let Some((other, oe)) = open.remove(&(b, a)) {
+                let cosine = dot(normals[i], normals[other]).clamp(-1.0, 1.0);
+                let (pa, pb) = (point(a), point(b));
+                let along = Vector3::new(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+                let convex = dot(along, cross(normals[i], normals[other])) > -1.0e-6 && cosine < 1.0;
+                for (t, e) in [(i, edge), (other, oe)] {
+                    cosines[t][e] = cosine;
+                    if convex {
+                        flags[t] |= 0x20 << e;
+                    }
+                }
+            } else {
+                open.insert((a, b), (i, edge));
+            }
+        }
+    }
+    let mut around = std::collections::HashMap::<usize, Vec<usize>>::new();
+    for (i, face) in ids.iter().enumerate() {
+        for &v in face {
+            around.entry(v).or_default().push(i);
+        }
+    }
+    for (v, faces) in &around {
+        let reference = normals[faces[0]];
+        if faces.iter().all(|&i| (dot(reference, normals[i]) - 1.0).abs() <= 0.01) {
+            for &i in faces {
+                for corner in 0..3 {
+                    if ids[i][corner] == *v {
+                        flags[i] |= 0x200 << corner;
+                    }
+                }
+            }
+        }
+    }
+    ids.iter()
+        .enumerate()
+        .filter_map(|(i, face)| {
+            WorldTriangle::from_vertices(face.map(point), material, 0, flags[i], cosines[i], 0.0)
+        })
+        .collect()
 }
 
 /// Samples further than this from a block's corner plane keep it subdivided.
@@ -160,29 +273,22 @@ fn block_is_planar(samples: &[Option<GtaVec>], n: usize, i: usize, j: usize, siz
 
 /// One-sided triangle whose winding gives an upward (+Y) face normal, matching
 /// the convention of the original level geometry: normal = (b - a) x (c - a).
-fn upward_triangle(v: [Vector3; 3], material: RetailContactMaterial) -> Option<WorldTriangle> {
+pub fn upward_vertices(v: [Vector3; 3]) -> [Vector3; 3] {
     let e1 = Vector3::new(v[1].x - v[0].x, v[1].y - v[0].y, v[1].z - v[0].z);
     let e2 = Vector3::new(v[2].x - v[0].x, v[2].y - v[0].y, v[2].z - v[0].z);
     let ny = e1.z * e2.x - e1.x * e2.z;
-    let ordered = if ny >= 0.0 { v } else { [v[0], v[2], v[1]] };
-    let triangle = triangle_from_volume(ordered, 0.0, [1.0; 3], TriangleFeature::ONE_SIDED);
-    let n = triangle.feature.normal;
-    let valid = triangle.edge_lengths.iter().all(|l| l.is_finite() && *l > 0.0)
-        && n.x.is_finite()
-        && n.y.is_finite()
-        && n.z.is_finite()
-        && n.y > 0.0;
-    valid.then_some(WorldTriangle {
-        triangle,
-        material,
-        tag: 0,
-    })
+    if ny >= 0.0 { v } else { [v[0], v[2], v[1]] }
 }
+
 
 /// Static ground mesh with per-triangle bounds, as the original host builds
 /// its levels, so contact queries only visit triangles near each volume.
 pub fn world(patch: &Patch) -> BoardWorld {
-    let triangles = patch.triangles.clone();
+    world_of(std::slice::from_ref(patch), &[])
+}
+
+pub fn world_of(patches: &[Patch], extra: &[WorldTriangle]) -> BoardWorld {
+    let triangles: Vec<_> = patches.iter().flat_map(|p| p.triangles.iter().copied()).chain(extra.iter().copied()).collect();
     let Some(local_bounds) =
         Bounds::from_points(triangles.iter().flat_map(|t| t.triangle.vertices))
     else {
@@ -205,6 +311,64 @@ pub fn world(patch: &Patch) -> BoardWorld {
     };
     BoardWorld::with_query_metadata(triangles.clone(), metadata)
         .unwrap_or_else(|_| BoardWorld::new(triangles))
+}
+
+/// Ground patches that follow several moving centres (board and skater).
+/// Centres closer than one patch share a patch at their midpoint.
+pub struct Patches {
+    pub settings: PatchSettings,
+    pub material: RetailContactMaterial,
+    pub patches: Vec<Patch>,
+}
+
+impl Patches {
+    pub fn new(settings: PatchSettings, material: RetailContactMaterial) -> Self {
+        Self { settings, material, patches: Vec::new() }
+    }
+
+    /// GTA XY squares the near patches cover, for the far field to skip.
+    pub fn rects(&self) -> Vec<crate::far::Rect> {
+        let h = self.half_extent();
+        self.patches.iter().map(|p| [p.center.x - h, p.center.y - h, p.center.x + h, p.center.y + h]).collect()
+    }
+
+    fn half_extent(&self) -> f32 {
+        self.settings.cells as f32 * self.settings.spacing * 0.5
+    }
+
+    /// Returns true when the patch set changed and the world must be rebuilt.
+    pub fn refresh(&mut self, probe: &mut dyn GroundProbe, frame: &Frame, centers: &[GtaVec]) -> bool {
+        let wanted = self.cluster(centers);
+        let stale = wanted.len() != self.patches.len()
+            || wanted.iter().zip(&self.patches).any(|(c, p)| p.needs_resample(*c, &self.settings));
+        if stale {
+            self.patches = wanted
+                .iter()
+                .map(|c| sample(probe, frame, *c, &self.settings, self.material))
+                .collect();
+        } else {
+            for p in &mut self.patches {
+                p.age_ticks += 1;
+            }
+        }
+        stale
+    }
+
+    fn cluster(&self, centers: &[GtaVec]) -> Vec<GtaVec> {
+        let reach = self.half_extent();
+        let mut out: Vec<GtaVec> = Vec::new();
+        for &c in centers {
+            if let Some(near) = out.iter_mut().find(|o| {
+                let d = o.sub(c);
+                (d.x * d.x + d.y * d.y).sqrt() < reach
+            }) {
+                *near = near.add(c).scale(0.5);
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -234,7 +398,7 @@ mod tests {
 
     #[test]
     fn slope_becomes_upward_triangles_in_skate_space() {
-        let frame = Frame { origin: GtaVec::new(0.0, 0.0, 10.0) };
+        let frame = Frame::new(GtaVec::new(0.0, 0.0, 10.0));
         let settings = PatchSettings::default();
         let patch = sample(&mut Slope, &frame, GtaVec::new(0.0, 0.0, 10.0), &settings, MATERIAL);
         assert_eq!(patch.triangles.len(), 2, "a plane needs no subdivision");
@@ -255,7 +419,7 @@ mod tests {
 
     #[test]
     fn a_curb_keeps_fine_triangles_only_along_its_edge() {
-        let frame = Frame { origin: GtaVec::default() };
+        let frame = Frame::new(GtaVec::default());
         let settings = PatchSettings::default();
         let patch = sample(&mut Curb, &frame, GtaVec::default(), &settings, MATERIAL);
         let full = settings.cells * settings.cells * 2;
@@ -266,7 +430,7 @@ mod tests {
 
     #[test]
     fn missing_probes_leave_holes_instead_of_bridging() {
-        let frame = Frame { origin: GtaVec::default() };
+        let frame = Frame::new(GtaVec::default());
         let settings = PatchSettings::default();
         let patch = sample(&mut Hole, &frame, GtaVec::default(), &settings, MATERIAL);
         assert!(patch.triangles.len() < settings.cells * settings.cells * 2);
@@ -275,7 +439,7 @@ mod tests {
 
     #[test]
     fn resample_after_moving_or_ageing() {
-        let frame = Frame { origin: GtaVec::default() };
+        let frame = Frame::new(GtaVec::default());
         let settings = PatchSettings::default();
         let mut patch = sample(&mut Hole, &frame, GtaVec::default(), &settings, MATERIAL);
         assert!(!patch.needs_resample(GtaVec::new(0.1, 0.1, 0.0), &settings));

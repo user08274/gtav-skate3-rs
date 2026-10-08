@@ -115,6 +115,64 @@ pub fn delete_entity(e: Entity) {
 pub fn set_entity_heading(e: Entity, heading: f32) {
     call!(0x8E2530AA8ADA980E, e, heading);
 }
+pub fn get_entity_model(e: Entity) -> u32 {
+    ret_i32(call!(0x9F47B058362C84B5, e)) as u32
+}
+/// Model bounding box (local min, max).
+pub fn get_model_dimensions(model: u32) -> (GtaVec, GtaVec) {
+    let (mut min, mut max) = (NVector3::default(), NVector3::default());
+    call!(0x03E8D3D5F549087A, model, &mut min as *mut NVector3, &mut max as *mut NVector3);
+    (GtaVec::new(min.x, min.y, min.z), GtaVec::new(max.x, max.y, max.z))
+}
+/// Right, forward, up axes and position.
+pub fn get_entity_matrix(e: Entity) -> [GtaVec; 4] {
+    let mut v = [NVector3::default(); 4];
+    let [f, r, u, p] = &mut v;
+    call!(0xECB2FC7235A7D137, e, f as *mut NVector3, r as *mut NVector3, u as *mut NVector3, p as *mut NVector3);
+    let g = |n: &NVector3| GtaVec::new(n.x, n.y, n.z);
+    [g(&v[1]), g(&v[0]), g(&v[2]), g(&v[3])]
+}
+pub fn is_entity_attached(e: Entity) -> bool {
+    ret_bool(call!(0xB346476EF1A64897, e))
+}
+pub fn is_entity_visible(e: Entity) -> bool {
+    ret_bool(call!(0x47D6F43D77935C75, e))
+}
+pub fn is_ped_ragdoll(ped: Entity) -> bool {
+    ret_bool(call!(0x47E4E977581C5B55, ped))
+}
+/// Knocks a ped over for `ms` milliseconds.
+pub fn set_ped_to_ragdoll(ped: Entity, ms: i32) {
+    call!(0xAE99FB955581844A, ped, ms, ms * 2, 0i32, false, false, false);
+}
+/// An impulse in world space at the entity's centre.
+pub fn push_entity(e: Entity, impulse: GtaVec) {
+    call!(
+        0xC5F68BE9613E2D18, e, 1i32, impulse.x, impulse.y, impulse.z, 0.0f32, 0.0f32, 0.0f32, 0i32, false, true, true, false,
+        true,
+    );
+}
+
+/// The entity's actual forward axis (its matrix, as drawn).
+pub fn get_entity_forward_vector(e: Entity) -> GtaVec {
+    ret_vec(call!(0x0A794A5A57F8DF91, e))
+}
+/// Upright rotation with the given yaw (degrees), rotation order ZXY.
+pub fn set_entity_yaw(e: Entity, yaw: f32) {
+    call!(0x8524A8B0171D5E07, e, 0.0f32, 0.0f32, yaw, 2i32, false);
+}
+pub fn set_entity_visible(e: Entity, visible: bool) {
+    call!(0xEA1C610A04DB6BBB, e, visible, false);
+}
+pub fn get_ped_bone_index(ped: Entity, tag: i32) -> i32 {
+    ret_i32(call!(0x3F428D08BE5AAE31, ped, tag))
+}
+pub fn set_entity_has_gravity(e: Entity, toggle: bool) {
+    call!(0x4A4722448F18EEF5, e, toggle);
+}
+pub fn set_ped_gravity(ped: Entity, toggle: bool) {
+    call!(0x9FF447B6B6AD960A, ped, toggle);
+}
 pub fn set_ped_can_ragdoll(ped: Entity, toggle: bool) {
     call!(0xB128377056A54E2A, ped, toggle);
 }
@@ -139,6 +197,21 @@ pub fn draw_line(a: GtaVec, b: GtaVec, rgba: [u8; 4]) {
         rgba[0] as i32, rgba[1] as i32, rgba[2] as i32, rgba[3] as i32,
     );
 }
+/// GTA's own procedural layers (leg/arm/head/torso IK, gestures) write the
+/// bones after the animation; the Skate 3 pose replaces all of them.
+pub fn set_ped_procedural_layers(ped: Entity, enabled: bool) {
+    call!(0x73518ECE2485412B, ped, enabled); // SET_PED_CAN_LEG_IK
+    call!(0x6C3B4D6D13B4C841, ped, enabled); // SET_PED_CAN_ARM_IK
+    call!(0xC11C18092C5530DC, ped, enabled); // SET_PED_CAN_HEAD_IK
+    call!(0xF2B7106D37947CE0, ped, enabled); // SET_PED_CAN_TORSO_IK
+    call!(0xBAF20C5432058024, ped, enabled); // SET_PED_CAN_PLAY_GESTURE_ANIMS
+    call!(0x6373D1349925A70E, ped, enabled); // SET_PED_CAN_PLAY_AMBIENT_ANIMS
+}
+
+/// Screen aspect ratio (width / height).
+pub fn get_aspect_ratio() -> f32 {
+    ret_f32(call!(0xF1307EF624A80D87, false))
+}
 pub fn get_frame_time() -> f32 {
     ret_f32(call!(0x15C40837039FFAF7))
 }
@@ -153,6 +226,39 @@ pub fn is_disabled_control_pressed(action: i32) -> bool {
 }
 pub fn is_disabled_control_just_pressed(action: i32) -> bool {
     ret_bool(call!(0x91AEF906BCA88877, 0i32, action))
+}
+
+pub fn disable_all_control_actions(group: i32) {
+    call!(0x5F4B6931816E599B, group);
+}
+pub fn get_disabled_control_normal_in(group: i32, action: i32) -> f32 {
+    ret_f32(call!(0x11E65974A982637C, group, action))
+}
+pub fn is_disabled_control_just_pressed_in(group: i32, action: i32) -> bool {
+    ret_bool(call!(0x91AEF906BCA88877, group, action))
+}
+
+pub type Cam = i32;
+pub fn create_cam() -> Cam {
+    ret_i32(call!(0xC3981DCE61D9E13F, c"DEFAULT_SCRIPTED_CAMERA".as_ptr(), true))
+}
+pub fn set_cam_active(cam: Cam, active: bool) {
+    call!(0x026FB97D0A425F84, cam, active);
+}
+pub fn render_script_cams(render: bool) {
+    call!(0x07E5B515DB0636FC, render, false, 0i32, true, false, 0i32);
+}
+pub fn destroy_cam(cam: Cam) {
+    call!(0x865908C81A2C22E9, cam, false);
+}
+pub fn set_cam_coord(cam: Cam, p: GtaVec) {
+    call!(0x4D41783FB745E42E, cam, p.x, p.y, p.z);
+}
+pub fn point_cam_at_coord(cam: Cam, p: GtaVec) {
+    call!(0xF75497BB865F0803, cam, p.x, p.y, p.z);
+}
+pub fn set_cam_fov(cam: Cam, fov: f32) {
+    call!(0xB13C14F66A00D047, cam, fov);
 }
 
 /// Synchronous line-of-sight probe; returns the hit point.
@@ -173,6 +279,27 @@ pub fn probe(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<Gta
         &mut entity as *mut u64,
     ));
     (status == 2 && hit as u32 != 0).then(|| GtaVec::new(end.x, end.y, end.z))
+}
+
+/// Like `probe`, also returning the surface normal at the hit.
+pub fn probe_with_normal(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<(GtaVec, GtaVec)> {
+    let handle = ret_i32(call!(
+        0x377906D8A31E5586, from.x, from.y, from.z, to.x, to.y, to.z, flags, ignore, 7i32,
+    ));
+    let mut hit: u64 = 0;
+    let mut end = NVector3::default();
+    let mut normal = NVector3::default();
+    let mut entity: u64 = 0;
+    let status = ret_i32(call!(
+        0x3D87450E15D98694,
+        handle,
+        &mut hit as *mut u64,
+        &mut end as *mut NVector3,
+        &mut normal as *mut NVector3,
+        &mut entity as *mut u64,
+    ));
+    (status == 2 && hit as u32 != 0)
+        .then(|| (GtaVec::new(end.x, end.y, end.z), GtaVec::new(normal.x, normal.y, normal.z)))
 }
 
 fn text_component(text: &str) -> CString {

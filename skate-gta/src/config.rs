@@ -2,6 +2,17 @@
 use crate::{sim::TestControlTuning, terrain::PatchSettings};
 use std::path::PathBuf;
 
+/// How the Skate 3 pose reaches the ped's bones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseMode {
+    /// Right after GTA copies the bones, through a hook on its memcpy.
+    Hook,
+    /// Right after GTA's bone write, noticed by guard pages (slow, logs who writes).
+    Guard,
+    /// From the script only; GTA overwrites it.
+    Script,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub skate3rust_dir: Option<PathBuf>,
@@ -11,8 +22,21 @@ pub struct Config {
     pub model_yaw_offset: f32,
     pub model_z_offset: f32,
     pub ped_z_offset: f32,
+    pub ped_yaw_offset: f32,
     pub probe_flags: i32,
     pub debug_draw: bool,
+    pub full_gameplay: bool,
+    pub mode: skate_gameplay::host::Mode,
+    pub skate_camera: bool,
+    pub low_camera: bool,
+    pub debug_body: bool,
+    pub ped_pose: bool,
+    pub ped_freeze: bool,
+    pub hud: bool,
+    pub grind_edges: bool,
+    pub collide_walls: bool,
+    pub collide_entities: bool,
+    pub pose_mode: PoseMode,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
 }
@@ -23,12 +47,25 @@ impl Default for Config {
             skate3rust_dir: None,
             asset_root: None,
             toggle_key: 0x74, // F5
-            board_model: "p_defilied_ragdoll_01_s".into(),
+            board_model: "none".into(),
             model_yaw_offset: 0.0,
             model_z_offset: 0.0,
             ped_z_offset: 1.0,
-            probe_flags: 1 | 16,
+            ped_yaw_offset: 0.0,
+            probe_flags: 1,
             debug_draw: true,
+            full_gameplay: true,
+            mode: skate_gameplay::host::Mode::Easy,
+            skate_camera: true,
+            low_camera: false,
+            debug_body: false,
+            ped_pose: true,
+            ped_freeze: true,
+            hud: true,
+            grind_edges: true,
+            collide_walls: true,
+            collide_entities: true,
+            pose_mode: PoseMode::Hook,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
         }
@@ -44,22 +81,55 @@ Skate3RustDir = C:\\Games\\skate3rust
 
 ; Virtual-key code to get on/off the board (0x74 = F5)
 ToggleKey = 0x74
-; Object used as the board model. Vanilla GTA has no skateboard; replace this
-; object with a skateboard .ydr (as SkateV does) or pick another prop.
-BoardModel = p_defilied_ragdoll_01_s
+; Object used as the board model, or none to draw the board as lines.
+; Vanilla GTA has no skateboard: e.g. replace p_defilied_ragdoll_01_s with a
+; skateboard .ydr (as SkateV does) and put that name here.
+BoardModel = none
 ModelYawOffset = 0
 ModelZOffset = 0
 PedZOffset = 1.0
+; Extra turn (degrees) of the Skate 3 pose on the ped, e.g. 90, 180, 270
+PedYawOffset = 0
 ; Draw the solver's deck, wheels and the sampled ground patch
 DebugDraw = 1
 
-; Phase-1 test controls (replaced by Skate 3 riding in phase 2)
+; full = complete Skate 3 gameplay (needs all converted files),
+; board = board physics only (needs skater-collections.json)
+Gameplay = full
+; Stock physics_mode: easy, normal or hardcore
+Difficulty = easy
+; Use the Skate 3 gameplay camera instead of the GTA camera
+SkateCamera = 1
+; Skate 3 Camera Angle: high or low
+CameraAngle = high
+; Pose the GTA player with the Skate 3 skater's animation
+PedPose = 1
+; Also draw the Skate 3 skeleton and board as lines
+DebugBody = 0
+; 1 = freeze the ped in place; 0 = keep it live with gravity and collision off
+PedFreeze = 1
+; How the pose reaches the ped: hook = written right after GTA copies the
+; bones (a hook on GTA's memcpy); guard = the same noticed with guard pages
+; (slow, logs which GTA code touches the bones); script = from the script
+; only (GTA overwrites it)
+PedPoseMode = hook
+; Walls and building sides (sideways rays) are solid for the skater
+CollideWalls = 1
+; Vehicles, props and pedestrians are solid; pedestrians you hit fall over
+CollideEntities = 1
+; Find curbs, ledges and step edges to grind (yellow lines with DebugDraw)
+GrindEdges = 1
+; The original Skate 3 trick and score HUD (assets\\private\\hud)
+Hud = 1
+
+; Board-only mode test controls
 PushForce = 40
 SteerAngle = 0.3
 InvertSteer = 0
 
-; Ground sampling around the board
-ProbeFlags = 17
+; Ground sampling around the board: 1 = map only, 17 = map + objects
+; (objects include street litter, which turns into bumps under the wheels)
+ProbeFlags = 1
 PatchCells = 8
 PatchSpacing = 0.4
 ";
@@ -91,7 +161,34 @@ impl Config {
                 "modelyawoffset" => c.model_yaw_offset = float()?,
                 "modelzoffset" => c.model_z_offset = float()?,
                 "pedzoffset" => c.ped_z_offset = float()?,
+                "pedyawoffset" => c.ped_yaw_offset = float()?,
                 "debugdraw" => c.debug_draw = flag()?,
+                "gameplay" => c.full_gameplay = match value.to_ascii_lowercase().as_str() {
+                    "full" => true,
+                    "board" => false,
+                    _ => return Err(err("must be full or board")),
+                },
+                "difficulty" => c.mode = skate_gameplay::host::Mode::parse(value)
+                    .ok_or_else(|| err("must be easy, normal or hardcore"))?,
+                "skatecamera" => c.skate_camera = flag()?,
+                "cameraangle" => c.low_camera = match value.to_ascii_lowercase().as_str() {
+                    "low" => true,
+                    "high" => false,
+                    _ => return Err(err("must be high or low")),
+                },
+                "debugbody" => c.debug_body = flag()?,
+                "pedpose" => c.ped_pose = flag()?,
+                "pedfreeze" => c.ped_freeze = flag()?,
+                "hud" => c.hud = flag()?,
+                "grindedges" => c.grind_edges = flag()?,
+                "collidewalls" => c.collide_walls = flag()?,
+                "collideentities" => c.collide_entities = flag()?,
+                "pedposemode" => c.pose_mode = match value.to_ascii_lowercase().as_str() {
+                    "hook" => PoseMode::Hook,
+                    "guard" => PoseMode::Guard,
+                    "script" => PoseMode::Script,
+                    _ => return Err(err("must be hook, guard or script")),
+                },
                 "pushforce" => c.tuning.push_force = float()?,
                 "steerangle" => c.tuning.steer_angle = float()?,
                 "invertsteer" => c.tuning.invert_steer = flag()?,
@@ -123,7 +220,7 @@ mod tests {
     fn template_parses() {
         let c = Config::parse(TEMPLATE).unwrap();
         assert_eq!(c.toggle_key, 0x74);
-        assert_eq!(c.probe_flags, 17);
+        assert_eq!(c.probe_flags, 1);
         assert!(c.skate3rust_dir.is_some() && c.asset_root.is_none());
     }
 

@@ -677,9 +677,11 @@ dependencies = [
 name = "skate-gta"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde_json",
  "skate-core",
  "skate-data",
+ "skate-gameplay",
  "windows-sys 0.59.0",
 ]
 

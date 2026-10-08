@@ -49,7 +49,7 @@ impl Mode {
 }
 
 /// Files the gameplay pipeline reads, relative to the converted assets root.
-pub const REQUIRED_FILES: [&str; 9] = [
+pub const REQUIRED_FILES: [&str; 16] = [
     "private/stock/skater-collections.json",
     "private/stock/physics-skeletons.json",
     "private/stock/data/anim/OnBoard.abin",
@@ -59,13 +59,25 @@ pub const REQUIRED_FILES: [&str; 9] = [
     "private/stock/data/script/camera/Default_cameragraph.stategraph",
     "private/stock/data/camera/1.shk",
     "private/stock/data/camera/2.shk",
+    "private/stock/data/joystick/skater.pat",
+    "private/stock/data/joystick/skater90.pat",
+    "private/stock/data/joystick/skaterN90.pat",
+    "private/stock/data/joystick/skater_air.pat",
+    "private/stock/data/joystick/skater_fingerflip.pat",
+    "private/stock/data/joystick/skaterls.pat",
+    "private/stock/data/joystick/skaterstep.pat",
 ];
 
 pub fn missing_files(root: &Path) -> Vec<&'static str> {
     REQUIRED_FILES.iter().copied().filter(|f| !root.join(f).is_file()).collect()
 }
 
+/// HIPS in the stock PHYS_TPOSE physics skeleton (SKATEBOARD_ROOT, NECK1, NECK,
+/// LEFTHAND, ... HIPS); the hand drives index 3 and 7 the same way.
+const HIPS_PART: usize = 23;
+
 pub struct Game {
+    deck_size: [f32; 2],
     physics: GamePhysics,
     skater: SkaterRuntime,
     controls: PlayerControls,
@@ -92,18 +104,54 @@ impl Game {
         .map_err(|e| e.to_string())?;
         let graphs = StockGraphs::load(root, &manifest)?;
         let difficulty = mode.difficulty();
-        let mut physics = GamePhysics::load_with_difficulty(root, None, difficulty)?;
-        physics.replace_world(BoardWorld::new(Vec::new()));
+        let physics = GamePhysics::load_with_difficulty(root, None, difficulty)?;
         let skater = SkaterRuntime::load(root, &graphs, &physics, difficulty.profile_key())?;
         let controls = PlayerControls::load(root)?;
         let camera = CameraRuntime::load(root)?;
-        Ok(Self { physics, skater, controls, graphs, camera, accumulator: Duration::ZERO })
+        let data = skate_data::collections::Collections::load(root)?;
+        let deck = |field| data.float("physicsdeck", "default", field);
+        let deck_size = [deck("DeckWidth")?, deck("DeckMidLength")? + 2.0 * deck("DeckBackEndSize")?];
+        Ok(Self { deck_size, physics, skater, controls, graphs, camera, accumulator: Duration::ZERO })
     }
 
-    /// Static collision near the skater, in skate space (metres, Y up). The
-    /// original test course is never used.
-    pub fn set_world(&mut self, world: BoardWorld) {
-        self.physics.replace_world(world);
+    /// Static collision near the skater, in skate space (metres, Y up), with
+    /// query metadata. Call before the first tick; the stock test course is
+    /// only a placeholder until then.
+    pub fn set_world(&mut self, world: BoardWorld) -> Result<(), String> {
+        self.physics.replace_world(world)
+    }
+
+    /// Grind lines in skate space (polylines along ledge, curb and rail tops).
+    /// Replacing them mid-grind would drop the rail under the board, so hosts
+    /// should only call this while `grinding()` is false.
+    pub fn set_grind_rails(&mut self, rails: &[Vec<skate_core::math::Vector3>]) -> Result<(), String> {
+        let rails: Vec<skate_data::skate_map::Rail> = rails
+            .iter()
+            .enumerate()
+            .filter(|(_, points)| points.len() >= 2)
+            .map(|(i, points)| skate_data::skate_map::Rail {
+                name: format!("host_edge_{i}"),
+                points: points.iter().map(|p| [p.x, p.y, p.z]).collect(),
+                closed: false,
+                native: None,
+            })
+            .collect();
+        let provider = self.physics.replace_grind_rails(&rails)?;
+        self.skater.trajectory.bind_grind_world(provider);
+        Ok(())
+    }
+
+    /// The skater is in one of the grind states.
+    pub fn grinding(&self) -> bool {
+        (400..=405).contains(&(self.state() as u32))
+    }
+
+    /// Line-query source beyond the static world (cleared by `set_world`).
+    pub fn set_external_queries(
+        &mut self,
+        queries: Option<std::sync::Arc<dyn skate_core::physics::board_world::ExternalQueries>>,
+    ) {
+        self.physics.set_external_queries(queries);
     }
 
     pub fn tick_period(&self) -> Duration {
@@ -163,9 +211,13 @@ impl Game {
         (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
     }
 
-    /// Physical skater bodies (26 parts; 0 is the hips).
+    /// Physical skater bodies, in PHYS_TPOSE bone order (0 is SKATEBOARD_ROOT).
     pub fn skater_body_positions(&self) -> Vec<skate_core::math::Vector3> {
         self.skater.skeleton.bodies().iter().map(|b| b.rates.position).collect()
+    }
+
+    pub fn hips_position(&self) -> skate_core::math::Vector3 {
+        self.skater.skeleton.bodies()[HIPS_PART].rates.position
     }
 
     /// Animation root to world, native column-major 4x4 (skate space).
@@ -178,8 +230,62 @@ impl Game {
         &self.skater.render_pose
     }
 
+    /// Every animated bone in skate world space with its parent index (-1 for
+    /// roots), from the completed render pose.
+    pub fn skeleton_world(&self) -> Vec<(skate_core::math::Vector3, i32)> {
+        let root = self.skater.animated_skeleton.roots.animation_to_world;
+        let parents = &self.skater.animation.evaluator.frames.parents;
+        self.skater
+            .render_pose
+            .iter()
+            .zip(parents)
+            .map(|(m, &parent)| {
+                let p = m[3];
+                let world = core::array::from_fn::<f32, 3, _>(|r| {
+                    root[0][r] * p[0] + root[1][r] * p[1] + root[2][r] * p[2] + root[3][r]
+                });
+                (skate_core::math::Vector3::new(world[0], world[1], world[2]), parent)
+            })
+            .collect()
+    }
+
+    /// Stock deck width and overall length (physicsdeck), metres.
+    pub fn deck_size(&self) -> [f32; 2] {
+        self.deck_size
+    }
+
     pub fn bone_names(&self) -> &[String] {
         &self.skater.animation.evaluator.frames.bone_names
+    }
+
+    /// The Skate 3 gameplay camera for this tick, in skate space.
+    pub fn camera_frame(&self) -> Option<skate_core::camera::CameraFrame> {
+        self.camera.presentation_frame()
+    }
+
+    /// Retail Camera Angle setting: true selects the low (classic) camera graph.
+    pub fn set_low_camera(&mut self, low: bool) {
+        let angle = if low { crate::camera::CameraAngle::Low } else { crate::camera::CameraAngle::High };
+        self.camera.set_camera_type(angle.graph_type());
+    }
+
+    pub(crate) fn scoring(&self) -> &crate::scoring_runtime::Runtime {
+        &self.skater.scoring
+    }
+
+    /// Name of the trick the scoring currently shows (changes as it is modified).
+    pub fn trick_name(&self) -> &str {
+        self.skater.scoring.trick_name()
+    }
+
+    /// The trick the scoring announced on the last tick, if any.
+    pub fn announced_trick(&self) -> Option<&str> {
+        self.skater.scoring.new_trick.then(|| self.skater.scoring.trick_name())
+    }
+
+    /// Name of the stock camera shot the Skate 3 camera graph selected.
+    pub fn camera_shot(&self) -> String {
+        self.camera.selected_shot().to_string()
     }
 
     pub fn wheel_contacts(&self) -> usize {

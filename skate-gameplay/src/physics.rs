@@ -231,10 +231,20 @@ impl GamePhysics {
         self.world.set_external_queries(queries);
     }
     /// Host-supplied static world; grind splines come from the same host.
-    pub(crate) fn replace_world(&mut self, world: BoardWorld) {
-        self.offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())
-            .expect("an empty grab registry is valid for any static world");
+    pub(crate) fn replace_world(&mut self, world: BoardWorld) -> Result<(), String> {
+        self.offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())?;
         self.world = world;
+        Ok(())
+    }
+    /// Host-supplied grind lines (skate space, Y up): ledge and rail tops.
+    pub(crate) fn replace_grind_rails(&mut self, rails: &[skate_data::skate_map::Rail]) -> Result<std::sync::Arc<crate::grind_world::StaticProvider>, String> {
+        let provider = std::sync::Arc::new(if rails.is_empty() {
+            crate::grind_world::StaticProvider::new(None)?
+        } else {
+            crate::grind_world::StaticProvider::authored(rails)?
+        });
+        self.grind_world = std::sync::Arc::clone(&provider);
+        Ok(provider)
     }
     pub(crate) fn clock_period(&self) -> std::time::Duration {
         self.clock.period()

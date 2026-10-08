@@ -1,5 +1,6 @@
-//! GTA entities around the skater as Skate 3 obstacles: vehicles and props
-//! as boxes from their model bounds, pedestrians as upright boxes. Peds the
+//! GTA entities around the skater as Skate 3 obstacles: vehicles
+//! as boxes from their model bounds, pedestrians as upright boxes. Static props
+//! use native collision probes rather than their entire model bounds. Peds the
 //! skater runs into are knocked over (GTA ragdoll), as in Skate 3.
 use super::{natives as n, shv};
 use crate::{coords::GtaVec, obstacles::Obstacle};
@@ -7,10 +8,6 @@ use std::collections::HashMap;
 
 const VEHICLE_RADIUS: f32 = 12.0;
 const PED_RADIUS: f32 = 6.0;
-const OBJECT_RADIUS: f32 = 8.0;
-/// Props lower than this are street litter (bumps under the wheels).
-const LOWEST_PROP: f32 = 0.3;
-const LARGEST_PROP: f32 = 15.0;
 /// A ped this close to the skater at this speed is knocked over.
 const KNOCK_DISTANCE: f32 = 0.35;
 const KNOCK_SPEED: f32 = 2.0;
@@ -18,8 +15,6 @@ const PED_HALF: [f32; 3] = [0.25, 0.25, 0.9];
 
 #[derive(Default)]
 pub struct Entities {
-    /// Props near the skater, re-listed every few frames (the pool is large).
-    objects: Vec<i32>,
     frames: u32,
     /// Peds knocked over recently: frame of the knock.
     knocked: HashMap<i32, u32>,
@@ -44,7 +39,7 @@ fn model_box(entity: i32) -> Option<Obstacle> {
 
 impl Entities {
     /// Boxes for everything solid near `center`, and the peds among them.
-    pub fn gather(&mut self, player: i32, board: Option<i32>, center: GtaVec) -> (Vec<Obstacle>, Vec<(i32, Obstacle)>) {
+    pub fn gather(&mut self, player: i32, _board: Option<i32>, center: GtaVec) -> (Vec<Obstacle>, Vec<(i32, Obstacle)>) {
         self.frames += 1;
         let mut boxes = Vec::new();
         for v in shv::world_entities(shv::Pool::Vehicles) {
@@ -71,23 +66,8 @@ impl Entities {
             boxes.push(b);
             peds.push((p, b));
         }
-        if self.frames % 15 == 1 {
-            self.objects = shv::world_entities(shv::Pool::Objects)
-                .into_iter()
-                .filter(|&o| Some(o) != board && horizontal(n::get_entity_coords(o), center) <= OBJECT_RADIUS + 4.0)
-                .collect();
-        }
-        for &o in &self.objects {
-            if horizontal(n::get_entity_coords(o), center) > OBJECT_RADIUS || n::is_entity_attached(o) || !n::is_entity_visible(o) {
-                continue;
-            }
-            let Some(b) = model_box(o) else { continue };
-            let height = b.half[2] * 2.0;
-            if height < LOWEST_PROP || b.half.iter().any(|h| *h * 2.0 > LARGEST_PROP) {
-                continue;
-            }
-            boxes.push(b);
-        }
+        // Static props use GTA's actual collision probes. A model bounding box
+        // fills the air below a traffic-light arm and inside an entire fence.
         (boxes, peds)
     }
 

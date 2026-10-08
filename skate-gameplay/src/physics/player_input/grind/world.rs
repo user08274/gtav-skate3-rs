@@ -93,6 +93,11 @@ fn line(world: &BoardWorld, matching: i32, probe: Probe) -> Result<Option<ProbeH
         .collect::<Vec<_>>();
     let mut nearest = f32::MAX;
     let mut output = None;
+    if let Some(external)=world.external_line(start,end,probe.radius){
+        nearest=external.hit.geometry.fraction;
+        output=Some(ProbeHit{fraction:nearest,position:packed(external.hit.geometry.position),
+            normal:packed(external.hit.geometry.normal),packed_surface:u32::from(external.surface)});
+    }
     //82764AB0 mask7 and8276EC40 aggregate nearest: ties retain earlier pools.
     for pool in [QueryPool::Ground, QueryPool::Island, QueryPool::Conditional] {
         if pool == QueryPool::Conditional && metadata.island_flags != 3 {

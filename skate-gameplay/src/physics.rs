@@ -99,6 +99,7 @@ pub(crate) struct GamePhysics {
     pub board: BoardRuntime,
     pub riding: RidingOutputs,
     world: BoardWorld,
+    native_rails: BoardWorld,
     grind_world: std::sync::Arc<crate::grind_world::StaticProvider>,
     grind_materials: grind_materials::GrindMaterials,
     offboard_grab_scene: offboard::grab_scene::Registry,
@@ -108,6 +109,7 @@ pub(crate) struct GamePhysics {
     retention: ContactRetentionSettings,
     pub ticks: u64,
     pub contact_count: usize,
+    pub native_contacts: bool,
     pub failed: bool,
     exchange: SimulationExchange,
     /// ProcessedPhysIn reset82BF9EF0 sets0x2000; initial stancebit20 is clear.
@@ -232,6 +234,7 @@ impl GamePhysics {
     }
     /// Host-supplied static world; grind splines come from the same host.
     pub(crate) fn replace_world(&mut self, world: BoardWorld) -> Result<(), String> {
+        self.native_rails=BoardWorld::new(world.triangles().iter().filter(|t|t.tag==crate::host::HOST_RAIL_TAG).copied().collect());
         self.offboard_grab_scene = offboard::grab_scene::Registry::new(&world, Vec::new(), Vec::new())?;
         self.world = world;
         Ok(())
@@ -248,6 +251,10 @@ impl GamePhysics {
     }
     pub(crate) fn clock_period(&self) -> std::time::Duration {
         self.clock.period()
+    }
+    pub(crate) fn extend_grind_rails(&mut self, rails:&[skate_data::skate_map::Rail])->Result<std::sync::Arc<crate::grind_world::StaticProvider>,String>{
+        let provider=std::sync::Arc::new(self.grind_world.extended(rails)?);
+        self.grind_world=std::sync::Arc::clone(&provider);Ok(provider)
     }
     pub(crate) fn world(&self) -> &BoardWorld {
         &self.world
@@ -345,6 +352,7 @@ impl GamePhysics {
             board,
             riding,
             world,
+            native_rails: BoardWorld::new(Vec::new()),
             grind_world,
             grind_materials,
             offboard_grab_scene,
@@ -354,6 +362,7 @@ impl GamePhysics {
             retention,
             ticks: 0,
             contact_count: 0,
+            native_contacts: false,
             failed: false,
             exchange: SimulationExchange::new(0),
             processed_flags_2468,

@@ -35,19 +35,54 @@ fn advance_inner(
     // Skeleton82BE5094 passes false to82768728: its edge threshold is -1,
     // whereas the board requests .999. GroundPipeline supplies the remaining
     // shared values. Do not let the second query overwrite the first's rows.
-    let mut contacts = physics
-        .world
-        .query_primitives(&board_volumes, physics.query, physics.retention)
-        .to_vec();
+    let mut contacts = Vec::new();
     let mut skeleton_query = physics.query;
     skeleton_query.edge_cos_bend_normal_threshold = -1.0;
     let mut skeleton_world_volumes = skeleton_volumes.clone();
     skeleton_colliders::retain_world_volumes(&mut skeleton_world_volumes, &skater.skeleton_collision);
-    contacts.extend_from_slice(physics.world.query_primitives(
-        &skeleton_world_volumes,
-        skeleton_query,
-        physics.retention,
-    ));
+    if !physics.native_contacts {
+        contacts.extend_from_slice(physics.world.query_primitives(
+            &board_volumes, physics.query, physics.retention,
+        ));
+    }else{
+        // Retain only ray-confirmed narrow tubes as a stable contact mesh.
+        // The sampled ground and former obstacle boxes stay excluded.
+        contacts.extend_from_slice(physics.native_rails.query_primitives(&board_volumes,physics.query,physics.retention));
+        contacts.extend_from_slice(physics.native_rails.query_primitives(&skeleton_world_volumes,skeleton_query,physics.retention));
+        contacts.extend_from_slice(physics.world.query_primitives(
+            &skeleton_world_volumes, skeleton_query, physics.retention,
+        ));
+    }
+    // Live host faces at actual shape-test hits, instead of obstacle boxes.
+    // Native geometry replaces the terrain approximation instead of adding
+    // competing constraints on curved surfaces.
+    for (volumes, query) in [(&board_volumes,physics.query),(&skeleton_world_volumes,skeleton_query)] {
+        for volume in volumes {
+            let (center,radius)=super::network::bounds(volume.primitive);
+            let center=skate_core::math::Vector3::new(center.x,center.y,center.z);
+            let triangles:Vec<_>=physics.world.external_nearby(center,radius+0.02).into_iter()
+                .filter_map(|vertices|skate_core::physics::board_world::WorldTriangle::from_vertices(vertices,
+                    skate_core::physics::contact::RetailContactMaterial{static_friction:0.,dynamic_friction:0.,restitution:1.},
+                    // A hit patch has no physical rim or corners. Suppress
+                    // artificial edge/vertex reactions between tangent faces.
+                    0,0xf10,[1.;3],0.))
+                .filter(|t| {
+                    let v=t.triangle.vertices;let n=t.triangle.feature.normal;
+                    let c=skate_core::math::Vector3::new((v[0].x+v[1].x+v[2].x)/3.,(v[0].y+v[1].y+v[2].y)/3.,(v[0].z+v[1].z+v[2].z)/3.);
+                    let a=skate_core::math::Vector3::new(c.x+n.x*0.01,c.y+n.y*0.01,c.z+n.z*0.01);
+                    let d=skate_core::math::Vector3::new(-n.x*0.02,-n.y*0.02,-n.z*0.02);
+                    !physics.world.triangles().iter().any(|existing|{
+                        if physics.native_contacts && existing.tag!=crate::host::HOST_RAIL_TAG{return false;}
+                        let mut hit=skate_core::physics::triangle_query::TriangleLineHit{position:c,normal:n,fraction:0.,volume_parameter:[0.;3]};
+                        skate_core::physics::triangle_query::triangle_segment(&mut hit,a,d,existing.triangle.vertices,0.,0.)
+                    })
+                }).collect();
+            if !triangles.is_empty(){
+                let mut local=skate_core::physics::board_world::BoardWorld::new(triangles);
+                contacts.extend_from_slice(local.query_primitives(std::slice::from_ref(volume),query,physics.retention));
+            }
+        }
+    }
     assembly_contacts::append(
         &mut contacts,
         &board_volumes,

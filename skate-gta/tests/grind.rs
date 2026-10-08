@@ -34,7 +34,7 @@ pub fn frame() -> Duration {
 
 /// Pushes north, then ollies with the left stick toward the ledge; returns
 /// the physical states seen from the ollie on.
-pub fn approach_and_ollie(ride: &mut Ride, probe: &mut dyn GroundProbe, steer: f32, push_ticks: u32) -> Vec<PhysicalStateId> {
+pub fn approach_and_ollie(ride: &mut Ride, probe: &mut dyn GroundProbe, steer: f32, push_ticks: u32) -> (Vec<PhysicalStateId>, u32) {
     for _ in 0..30 {
         ride.advance(frame(), 4, [0.0; 18], probe).unwrap();
     }
@@ -44,6 +44,9 @@ pub fn approach_and_ollie(ride: &mut Ride, probe: &mut dyn GroundProbe, steer: f
         ride.advance(frame(), 4, pad, probe).unwrap();
     }
     let mut states = Vec::new();
+    let mut grind_frames = 0;
+    let mut streak = 0;
+    let mut longest = 0;
     for i in 0..240u32 {
         let mut pad = [0.0; 18];
         pad[RIGHT_STICK_Y] = match i {
@@ -56,11 +59,20 @@ pub fn approach_and_ollie(ride: &mut Ride, probe: &mut dyn GroundProbe, steer: f
         }
         ride.advance(frame(), 4, pad, probe).unwrap();
         let state = ride.game.state();
+        if (400..=405).contains(&(state as u32)) {
+            grind_frames += 1;
+            streak += 1;
+            longest = longest.max(streak);
+        } else {
+            streak = 0;
+        }
         if states.last() != Some(&state) {
+            eprintln!("frame {i} state {state:?} deck {:?}", ride.deck_position());
             states.push(state);
         }
     }
-    states
+    eprintln!("grind frames {grind_frames}, longest {longest}, final deck {:?}", ride.deck_position());
+    (states, longest)
 }
 
 pub fn grinding(states: &[PhysicalStateId]) -> bool {
@@ -90,11 +102,11 @@ fn a_ledge_edge_given_by_hand_can_be_ground() {
                     .map(|&y| ride.frame.to_skate(GtaVec::new(LEDGE_X, y, LEDGE_TOP)))
                     .collect();
                 ride.game.set_grind_rails(&[rail]).unwrap();
-                let states = approach_and_ollie(&mut ride, &mut probe, steer, 90);
+                let (states, longest) = approach_and_ollie(&mut ride, &mut probe, steer, 90);
                 eprintln!("steer {steer}: {states:?} deck x {:.2}", ride.deck_position().x);
-                results.push(grinding(&states));
+                results.push(grinding(&states) && longest >= 60);
             }
-            assert!(results.iter().any(|&g| g), "one of the approaches grinds");
+            assert!(results.iter().any(|&g| g), "one approach must sustain a grind for at least one second");
         })
         .unwrap();
     worker.join().unwrap();
@@ -118,14 +130,14 @@ fn ledges_found_in_the_ground_can_be_ground() {
                     &mut probe,
                 )
                 .unwrap();
-                let states = approach_and_ollie(&mut ride, &mut probe, steer, 90);
+                let (states, longest) = approach_and_ollie(&mut ride, &mut probe, steer, 90);
                 let lines = ride.grind_lines();
                 eprintln!("steer {steer}: {states:?}; {} grind lines, first {:?}", lines.len(), lines.first());
                 assert!(lines.iter().any(|l| l.iter().all(|p| (p.x - LEDGE_X).abs() < 0.02 && (p.z - LEDGE_TOP).abs() < 1e-3)),
                     "the ledge's west edge is a grind line: {lines:?}");
-                results.push(grinding(&states));
+                results.push(grinding(&states) && longest >= 60);
             }
-            assert!(results.iter().any(|&g| g), "one of the approaches grinds");
+            assert!(results.iter().any(|&g| g), "one approach must sustain a grind for at least one second");
         })
         .unwrap();
     worker.join().unwrap();

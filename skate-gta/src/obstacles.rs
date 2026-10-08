@@ -1,6 +1,6 @@
 //! Solid things the downward ground rays cannot describe: walls and
 //! building sides (found with sideways rays), and GTA entities (vehicles,
-//! props, pedestrians) as oriented boxes. All of them become closed boxes
+//! pedestrians) as oriented boxes. Static props use native probes. These become closed boxes
 //! of world triangles next to the sampled ground, so the original Skate 3
 //! physics collides with them, bails included.
 use crate::{
@@ -70,6 +70,23 @@ const BOX_FACES: [[usize; 3]; 12] = [
     [0, 4, 6], [0, 6, 2], // -x
     [1, 3, 7], [1, 7, 5], // +x
 ];
+
+/// Side-ray slabs must not duplicate a ledge/tube already represented by
+/// the terrain or rail mesh. Their independent end caps interrupt grinding.
+pub fn wall_overlaps_grind(wall: &Obstacle, lines: &[Vec<GtaVec>]) -> bool {
+    let face=wall.center.sub(wall.axes[1].scale(wall.half[1]));
+    let top=wall.center.z+wall.half[2];
+    lines.iter().any(|line|line.windows(2).any(|pair| {
+        let a=pair[0]; let d=pair[1].sub(a);
+        let length2=d.x*d.x+d.y*d.y;
+        if length2<1e-6{return false;}
+        let along=(d.x*wall.axes[0].x+d.y*wall.axes[0].y).abs()/length2.sqrt();
+        if along<0.9{return false;}
+        let t=(((face.x-a.x)*d.x+(face.y-a.y)*d.y)/length2).clamp(0.,1.);
+        let at=a.add(d.scale(t));
+        (at.x-face.x).powi(2)+(at.y-face.y).powi(2)<0.08*0.08 && (at.z-top).abs()<0.12
+    }))
+}
 
 /// Closed boxes as skate-space world triangles.
 pub fn triangles(obstacles: &[Obstacle], frame: &Frame, material: RetailContactMaterial) -> Vec<WorldTriangle> {
@@ -144,18 +161,82 @@ impl WallFinder {
             let to = from.add(GtaVec::new(angle.cos() * s.reach, angle.sin() * s.reach, 0.0));
             let Some((hit, normal)) = probe.toward(from, to) else { continue };
             // Slopes and ramps face up; only near-vertical faces are walls.
-            if normal.z.abs() > 0.6 {
+            if normal.z.abs() > 0.10 {
                 continue;
             }
             let n = GtaVec::new(normal.x, normal.y, 0.0).normalized();
+            // The almost vertical end of a quarter-pipe also faces sideways.
+            // If the sampled ground continues through it, terrain already
+            // describes this face; adding a slab would block the transition.
+            let front=hit.add(n.scale(0.15));
+            let back=hit.sub(n.scale(0.15));
+            if let (Some(a),Some(b))=(
+                probe.down(front.x,front.y,hit.z+4.,hit.z-4.),
+                probe.down(back.x,back.y,hit.z+4.,hit.z-4.)) {
+                if (a-b).abs()>0.03 && crate::terrain::step_between(probe,
+                    GtaVec::new(front.x,front.y,a),GtaVec::new(back.x,back.y,b)).is_none() {
+                    continue;
+                }
+            }
             // Its top: the first surface found just inside the face, from above.
-            let inside = hit.sub(n.scale(0.15));
+            let inside = hit.sub(n.scale(0.01));
             let ceiling = ground.z + s.tallest;
-            let top = probe
+            let found_top = probe
                 .down(inside.x, inside.y, ceiling, ground.z - 0.5)
-                .filter(|&t| t > ground.z + 0.05 && t < ceiling - 0.05)
-                .unwrap_or(ceiling);
-            let obstacle = Obstacle::wall(hit, n, ground.z - 0.5, top, 0.9);
+                .filter(|&t| t > ground.z + 0.05 && t < ceiling - 0.05);
+            let top = found_top.unwrap_or_else(|| {
+                // A missed top ray is not evidence for a tall wall. Confirm
+                // the same face upward, then refine its actual end.
+                let same_face=|probe:&mut dyn GroundProbe,z:f32| {
+                    let at=GtaVec::new(hit.x,hit.y,z);
+                    probe.toward(at.add(n.scale(0.15)),at.sub(n.scale(0.15)))
+                        .is_some_and(|(p,facing)| facing.z.abs()<=0.10
+                            && facing.x*n.x+facing.y*n.y>=0.98
+                            && ((p.x-hit.x)*n.x+(p.y-hit.y)*n.y).abs()<=0.02)
+                };
+                let mut confirmed=hit.z;
+                while confirmed<ceiling {
+                    let next=(confirmed+0.2).min(ceiling);
+                    if same_face(probe,next){confirmed=next;continue;}
+                    let mut end=next;
+                    for _ in 0..5 {
+                        let middle=(confirmed+end)*0.5;
+                        if same_face(probe,middle){confirmed=middle;}else{end=middle;}
+                    }
+                    break;
+                }
+                confirmed
+            });
+            // Do not extend a tiny pole into a metre-wide slab. Each tangent
+            // offset must hit the same plane with the same facing normal.
+            let along = GtaVec::new(-n.y, n.x, 0.0);
+            let mut extents = [0.025f32; 2];
+            for (side, sign) in [-1.0, 1.0].into_iter().enumerate() {
+                for step in 1..=4 {
+                    let offset = along.scale(sign * step as f32 * 0.1);
+                    let start = hit.add(offset).add(n.scale(0.15));
+                    let end = hit.add(offset).sub(n.scale(0.15));
+                    let Some((p, facing)) = probe.toward(start, end) else { break };
+                    let d = p.sub(hit);
+                    let plane_error = (d.x * n.x + d.y * n.y).abs();
+                    if facing.z.abs() > 0.10 || facing.x * n.x + facing.y * n.y < 0.98 || plane_error > 0.02 { break; }
+                    extents[side] = step as f32 * 0.1;
+                }
+            }
+            // A horizontal handrail is not a wall down to the pavement.
+            // Only extend downward while the same vertical face is observed.
+            let mut bottom = hit.z;
+            let steps = ((hit.z-(ground.z-0.5))/0.2).ceil().max(0.) as usize;
+            for step in 1..=steps.min(12) {
+                let at = GtaVec::new(hit.x,hit.y,hit.z-step as f32*0.2);
+                let Some((p,facing)) = probe.toward(at.add(n.scale(0.15)),at.sub(n.scale(0.15))) else {break};
+                let d=p.sub(at);
+                if facing.z.abs()>0.10 || facing.x*n.x+facing.y*n.y<0.98
+                    || (d.x*n.x+d.y*n.y).abs()>0.02 {break;}
+                bottom=p.z;
+            }
+            let mid = hit.add(along.scale((extents[1] - extents[0]) * 0.5));
+            let obstacle = Obstacle::wall(mid, n, bottom-0.01, top.max(hit.z+0.01), extents[0] + extents[1]);
             let key = ((hit.x * 4.0).round() as i32, (hit.y * 4.0).round() as i32, (top * 4.0).round() as i32);
             self.walls.insert(key, Wall { obstacle, seen: self.updates });
         }
@@ -177,6 +258,83 @@ impl WallFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grind_slab_duplicates_are_removed_but_crossing_walls_remain() {
+        let wall=Obstacle::wall(GtaVec::new(1.,0.,0.3),GtaVec::new(-1.,0.,0.),0.,0.5,0.8);
+        let line=vec![GtaVec::new(1.,-2.,0.5),GtaVec::new(1.,2.,0.5)];
+        assert!(wall_overlaps_grind(&wall,&[line]));
+        let crossing=vec![GtaVec::new(-1.,0.,0.5),GtaVec::new(3.,0.,0.5)];
+        assert!(!wall_overlaps_grind(&wall,&[crossing]));
+        let remote=vec![GtaVec::new(2.,-2.,0.5),GtaVec::new(2.,2.,0.5)];
+        assert!(!wall_overlaps_grind(&wall,&[remote]));
+    }
+
+    #[test]
+    fn an_almost_vertical_continuous_transition_is_not_boxed() {
+        struct Transition;
+        impl GroundProbe for Transition {
+            fn down(&mut self,x:f32,_y:f32,top:f32,bottom:f32)->Option<f32> {
+                let z=20.*(x-1.);
+                (top>=z && bottom<=z).then_some(z)
+            }
+            fn toward(&mut self,from:GtaVec,to:GtaVec)->Option<(GtaVec,GtaVec)> {
+                let d=to.sub(from); let denominator=d.z-20.*d.x;
+                if denominator.abs()<1e-6{return None;}
+                let t=(20.*(from.x-1.)-from.z)/denominator;
+                (0. ..=1.).contains(&t).then_some((from.add(d.scale(t)),GtaVec::new(-20.,0.,1.).normalized()))
+            }
+        }
+        let mut finder=WallFinder::new(WallSettings{rays:1000,..WallSettings::default()});
+        finder.update(&mut Transition,GtaVec::default());
+        assert!(finder.obstacles().is_empty(),"continuous near-vertical ramp acquired slabs");
+    }
+
+    #[test]
+    fn missing_top_ray_does_not_create_a_tall_phantom_wall() {
+        struct Fin;
+        impl GroundProbe for Fin {
+            fn down(&mut self,_x:f32,_y:f32,top:f32,bottom:f32)->Option<f32> {
+                (top>=0. && bottom<=0.).then_some(0.)
+            }
+            fn toward(&mut self,from:GtaVec,to:GtaVec)->Option<(GtaVec,GtaVec)> {
+                let d=to.sub(from);
+                if d.x<=0. || !(0. ..=0.5).contains(&from.z){return None;}
+                let t=(1.-from.x)/d.x;
+                (0. ..=1.).contains(&t).then_some((from.add(d.scale(t)),GtaVec::new(-1.,0.,0.)))
+            }
+        }
+        let mut finder=WallFinder::new(WallSettings{rays:1000,..WallSettings::default()});
+        finder.update(&mut Fin,GtaVec::default());
+        let obstacles=finder.obstacles();
+        assert!(!obstacles.is_empty());
+        for o in obstacles {assert!(o.center.z+o.half[2]<=0.51,"invented wall top: {o:?}");}
+    }
+
+    #[test]
+    fn ramps_are_not_walls_and_a_pole_does_not_fill_the_road() {
+        struct Scene { ramp: bool }
+        impl GroundProbe for Scene {
+            fn down(&mut self,_x:f32,_y:f32,_top:f32,_bottom:f32)->Option<f32>{Some(0.)}
+            fn toward(&mut self,from:GtaVec,to:GtaVec)->Option<(GtaVec,GtaVec)>{
+                let d=to.sub(from);
+                if d.x==0. {return None;}
+                let t=(1.-from.x)/d.x;
+                if !(0. ..=1.).contains(&t){return None;}
+                let p=from.add(d.scale(t));
+                if self.ramp {Some((p,GtaVec::new(-0.92,0.,0.39)))}
+                else {(p.y.abs()<0.04).then_some((p,GtaVec::new(-1.,0.,0.)))}
+            }
+        }
+        let settings=WallSettings{rays:1000,..WallSettings::default()};
+        let mut finder=WallFinder::new(settings);
+        finder.update(&mut Scene{ramp:true},GtaVec::default());
+        assert!(finder.obstacles().is_empty(),"ramp was boxed as a building wall");
+        finder.update(&mut Scene{ramp:false},GtaVec::default());
+        let obstacles=finder.obstacles();
+        assert!(!obstacles.is_empty(),"the pole must remain solid");
+        for o in obstacles {assert!(o.half[0]*2.<0.1,"pole expanded into the road: {o:?}");}
+    }
 
     #[test]
     fn box_faces_point_outward() {

@@ -4,6 +4,7 @@
 use crate::{
     coords::{EntityAxes, Frame, GtaVec},
     edges::{EdgeFinder, EdgeSettings},
+    rails::RailFinder,
     obstacles::{Obstacle, WallFinder, WallSettings},
     far::{FarField, FarSettings},
     terrain::{GroundProbe, PatchSettings, Patches},
@@ -22,6 +23,30 @@ const FLOOR: RetailContactMaterial = RetailContactMaterial {
     dynamic_friction: 0.0,
     restitution: 1.0,
 };
+
+fn search_direction(movement:GtaVec,deck:GtaVec,skater:GtaVec,walking:bool,period:f32)->GtaVec{
+    let planar=|v:GtaVec|GtaVec::new(v.x,v.y,0.);
+    let motion=planar(movement);
+    if motion.x*motion.x+motion.y*motion.y>(period*0.25).powi(2){return motion.normalized();}
+    let facing=planar(if walking{skater}else{deck});
+    if facing.x*facing.x+facing.y*facing.y>1e-6 {facing.normalized()}
+    else{GtaVec::new(0.,1.,0.)}
+}
+
+#[cfg(test)]mod search_tests {
+    use super::*;
+    #[test]fn lookahead_follows_travel_when_the_deck_is_sideways_or_riding_fakie(){
+        for deck in [GtaVec::new(1.,0.,0.),GtaVec::new(0.,-1.,0.)]{
+            assert_eq!(search_direction(GtaVec::new(0.,0.04,0.01),deck,GtaVec::new(1.,0.,0.),false,1./120.),GtaVec::new(0.,1.,0.));
+        }
+    }
+    #[test]fn a_slope_and_a_carried_board_keep_ten_horizontal_metres(){
+        let direction=search_direction(GtaVec::default(),GtaVec::new(0.,0.6,0.8),GtaVec::new(1.,0.,0.),false,1./120.);
+        assert_eq!(direction.scale(10.),GtaVec::new(0.,10.,0.));
+        let walking=search_direction(GtaVec::default(),GtaVec::new(0.,0.,1.),GtaVec::new(1.,0.,0.),true,1./120.);
+        assert_eq!(walking.scale(10.),GtaVec::new(10.,0.,0.));
+    }
+}
 
 /// Changes when any obstacle moves by a centimetre or more.
 fn fingerprint(obstacles: &[Obstacle]) -> u64 {
@@ -60,11 +85,13 @@ pub struct Ride {
     hud_sprites: Vec<Sprite>,
     /// Grindable step edges around the skater and the lines last given to the game.
     pub edges: EdgeFinder,
+    pub rails: RailFinder,
     /// Last ground the game refused (logged by the host; the old ground stays).
     pub world_error: Option<String>,
     /// Walls from sideways rays, and entity boxes the host sets each frame.
     pub walls: WallFinder,
     pub find_walls: bool,
+    pub native_collision: bool,
     entities: Vec<Obstacle>,
     /// Obstacles in the world the game has, and their fingerprint.
     obstacles: Vec<Obstacle>,
@@ -72,6 +99,8 @@ pub struct Ride {
     /// Look for grindable edges at all (`GrindEdges`).
     pub grind_edges: bool,
     edges_given: u64,
+    rails_given: u64,
+    lines_at: Option<GtaVec>,
     grind_lines: Vec<Vec<GtaVec>>,
 }
 
@@ -111,6 +140,8 @@ impl Ride {
             hud_error,
             hud_sprites: Vec::new(),
             edges: EdgeFinder::new(EdgeSettings::default()),
+            rails: RailFinder::default(),
+            native_collision: false,
             grind_edges: true,
             world_error: None,
             walls: WallFinder::new(WallSettings::default()),
@@ -119,6 +150,8 @@ impl Ride {
             obstacles: Vec::new(),
             obstacles_key: 0,
             edges_given: 0,
+            rails_given: 0,
+            lines_at: None,
             grind_lines: Vec::new(),
         };
         // Fill the whole far field once so the camera starts with full ground.
@@ -137,22 +170,32 @@ impl Ride {
     /// Probes GTA around the board and skater. Must run on the script fiber.
     pub fn refresh_world(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
         let centers = [self.deck_position(), self.hips_position()];
+        // While walking the board is held at hip height. Search from the feet,
+        // otherwise every horizontal rail below the carried deck is missed.
+        let hips = centers[1];
+        let rail_center = probe.down(hips.x, hips.y, hips.z - 0.55, hips.z - 3.)
+            .map(|z| GtaVec::new(hips.x, hips.y, z + 0.087))
+            .unwrap_or(centers[0]);
+        self.rails.update_ahead(probe,rail_center,self.search_forward());
         // An empty sample (nothing under the board within reach) keeps the
         // last ground: the game cannot take a world without surfaces.
         let resampled = self.patches.refresh(probe, &self.frame, &centers);
         if self.find_walls {
             self.walls.update(probe, self.deck_position());
         }
-        let mut obstacles = if self.find_walls { self.walls.obstacles() } else { Vec::new() };
-        obstacles.extend(self.entities.iter().copied());
+        self.refresh_grind_lines(probe)?;
+        let mut obstacles = if self.find_walls && !self.native_collision { self.walls.obstacles() } else { Vec::new() };
+        obstacles.retain(|wall| !crate::obstacles::wall_overlaps_grind(wall,&self.grind_lines));
+        if !self.native_collision { obstacles.extend(self.entities.iter().copied()); }
         // Only what the board or the body can reach soon matters to the physics.
         let (deck, hips) = (self.deck_position(), self.hips_position());
         obstacles.retain(|o| o.distance(deck).min(o.distance(hips)) < 5.0);
-        let key = fingerprint(&obstacles);
+        let key = fingerprint(&obstacles) ^ self.rails.version.wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let found = (resampled || key != self.obstacles_key)
             && self.patches.patches.iter().any(|p| !p.triangles.is_empty());
         if found {
-            let extra = crate::obstacles::triangles(&obstacles, &self.frame, FLOOR);
+            let mut extra = crate::obstacles::triangles(&obstacles, &self.frame, FLOOR);
+            extra.extend(self.rails.triangles(&self.frame, deck, FLOOR));
             self.obstacles = obstacles;
             self.obstacles_key = key;
             let world = crate::terrain::world_of(&self.patches.patches, &extra);
@@ -164,29 +207,36 @@ impl Ride {
         self.far.update(probe, self.hips_position());
         let queries = self.far.queries(self.frame, self.patches.rects());
         self.game.set_external_queries(Some(std::sync::Arc::new(queries)));
-        self.refresh_grind_lines(probe)
+        Ok(())
     }
 
     /// Finds step edges near the skater and hands them to the game as grind
-    /// lines. Only while rolling or walking: swapping the lines in the air or
-    /// mid-grind would pull the rail out from under a landing or a grind.
+    /// lines. Append stable continuations in air and during grinding, and
+    /// replace the local provider while rolling/walking.
     fn refresh_grind_lines(&mut self, probe: &mut dyn GroundProbe) -> Result<(), String> {
         if !self.grind_edges {
             return Ok(());
         }
         let center = self.hips_position();
-        self.edges.update(probe, center);
-        let settled = matches!(self.game.state() as u32, 100..=105 | 500 | 502);
-        if self.edges.version == self.edges_given || !settled {
+        // A six-metre window centred five metres ahead reaches beyond the
+        // requested ten metres while still including the current contact.
+        self.edges.update_ahead(probe,center,self.search_forward());
+        let moved = self.lines_at.is_none_or(|p| {
+            let d = p.sub(center); d.x*d.x + d.y*d.y > 4.
+        });
+        if self.edges.version == self.edges_given && self.rails.version == self.rails_given && !moved {
             return Ok(());
         }
-        let lines = self.edges.polylines(center, self.edges.settings.radius + 2.0);
+        let mut lines = self.edges.polylines(center, self.edges.settings.radius + 10.0);
+        lines.extend(self.rails.lines(center));
         let rails: Vec<Vec<skate_core::math::Vector3>> =
             lines.iter().map(|line| line.iter().map(|&p| self.frame.to_skate(p)).collect()).collect();
         let game = &mut self.game;
         crate::bigstack::run(move || game.set_grind_rails(&rails))?;
         self.grind_lines = lines;
         self.edges_given = self.edges.version;
+        self.rails_given = self.rails.version;
+        self.lines_at = Some(center);
         Ok(())
     }
 
@@ -219,6 +269,12 @@ impl Ride {
     /// The gameplay ticks alone, on a large-stack thread. Calls no natives.
     /// Keeps the last two tick snapshots for interpolated presentation.
     pub fn advance_game(&mut self, elapsed: Duration, max_ticks: u32, pad: [f32; 18]) -> Result<u32, String> {
+        self.advance_game_inner(elapsed,max_ticks,pad,None)
+    }
+    pub fn advance_native(&mut self,elapsed:Duration,max_ticks:u32,pad:[f32;18],probe:&mut dyn GroundProbe)->Result<u32,String>{
+        self.advance_game_inner(elapsed,max_ticks,pad,Some(probe))
+    }
+    fn advance_game_inner(&mut self,elapsed:Duration,max_ticks:u32,pad:[f32;18],mut probe:Option<&mut dyn GroundProbe>)->Result<u32,String>{
         let period = self.game.tick_period();
         self.accumulator = (self.accumulator + elapsed).min(period * max_ticks);
         let due = (self.accumulator.as_nanos() / period.as_nanos().max(1)) as u32;
@@ -227,7 +283,11 @@ impl Ride {
             return Ok(0);
         }
         let (game, frame, hud) = (&mut self.game, &self.frame, &mut self.hud);
-        let (second_last, last, sprites) = crate::bigstack::run(move || {
+        let (queries,service)=crate::native_queries::channel(*frame);
+        let live=probe.is_some();
+        let (second_last, last, sprites) = crate::bigstack::run_serviced(move || {
+            game.set_native_contacts(live);
+            if live {game.set_external_queries(Some(std::sync::Arc::new(queries)));}
             let mut second_last = None;
             let mut last = None;
             let mut hud_error = None;
@@ -248,7 +308,7 @@ impl Ride {
                 (None, None) => Ok(Vec::new()),
             };
             Ok((second_last, last.expect("at least one tick ran"), sprites))
-        })?;
+        },||{if let Some(p)=probe.as_mut(){service.pump(*p);}else{std::thread::yield_now();}})?;
         match sprites {
             Ok(sprites) => self.hud_sprites = sprites,
             Err(error) => {
@@ -299,6 +359,10 @@ impl Ride {
 
     pub fn deck_axes(&self) -> EntityAxes {
         self.frame.entity_axes(self.game.deck().basis)
+    }
+    fn search_forward(&self)->GtaVec{
+        search_direction(self.current.hips.sub(self.previous.hips),self.deck_axes().forward,
+            self.skater_forward(),matches!(self.game.state() as u32,500..=505),self.game.tick_period().as_secs_f32())
     }
 
     pub fn hips_position(&self) -> GtaVec {

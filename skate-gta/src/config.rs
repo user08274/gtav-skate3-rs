@@ -55,7 +55,7 @@ impl Default for Config {
             model_z_offset: 0.0,
             ped_z_offset: 1.0,
             ped_yaw_offset: 0.0,
-            probe_flags: 1,
+            probe_flags: 17,
             debug_draw: true,
             full_gameplay: true,
             mode: skate_gameplay::host::Mode::Easy,
@@ -117,9 +117,9 @@ PedFreeze = 1
 ; (slow, logs which GTA code touches the bones); script = from the script
 ; only (GTA overwrites it)
 PedPoseMode = hook
-; Walls and building sides (sideways rays) are solid for the skater
+; Legacy box option; full gameplay now uses native GTA collision queries
 CollideWalls = 1
-; Vehicles, props and pedestrians are solid; pedestrians you hit fall over
+; Pedestrian hit reactions; physical contacts use actual GTA shape tests
 CollideEntities = 1
 ; Find curbs, ledges and step edges to grind (yellow lines with DebugDraw)
 GrindEdges = 1
@@ -135,9 +135,9 @@ PushForce = 40
 SteerAngle = 0.3
 InvertSteer = 0
 
-; Ground sampling around the board: 1 = map only, 17 = map + objects
-; (objects include street litter, which turns into bumps under the wheels)
-ProbeFlags = 1
+; Native collision sampling includes the map and objects (17).
+; Object collision is required for platforms and handrails.
+ProbeFlags = 17
 PatchCells = 8
 PatchSpacing = 0.4
 ";
@@ -230,7 +230,7 @@ mod tests {
     fn template_parses() {
         let c = Config::parse(TEMPLATE).unwrap();
         assert_eq!(c.toggle_key, 0x74);
-        assert_eq!(c.probe_flags, 1);
+        assert_eq!(c.probe_flags, 17);
         assert!(c.skate3rust_dir.is_some() && c.asset_root.is_none());
     }
 

@@ -88,15 +88,18 @@ pub fn sample(
                 y,
                 center.z + settings.probe_above,
                 center.z - settings.probe_below,
-            );
+            ).or_else(|| probe.down(x,y,center.z+6.0,center.z-settings.probe_below));
             samples.push(hit.map(|z| GtaVec::new(x, y, z)));
         }
     }
     let mut faces: Vec<[usize; 3]> = Vec::new();
+    let mut partials = Vec::new();
     let mut emit = |i: usize, j: usize, size: usize| {
         let id = |di: usize, dj: usize| (j + dj) * n + i + di;
         let quad = [id(0, 0), id(size, 0), id(size, size), id(0, size)];
         if quad.iter().any(|&k| samples[k].is_none()) {
+            let valid: Vec<_> = quad.iter().copied().filter(|&k|samples[k].is_some()).collect();
+            if valid.len()==3 {partials.push([valid[0],valid[1],valid[2]]);}
             return;
         }
         faces.push([quad[0], quad[1], quad[2]]);
@@ -111,7 +114,7 @@ pub fn sample(
             }
         }
     }
-    let triangles = build_triangles(&samples, faces, frame, material);
+    let triangles = build_surface(probe, &samples, faces, partials, frame, material);
     Patch {
         center,
         samples,
@@ -120,39 +123,115 @@ pub fn sample(
     }
 }
 
-/// Skate-space triangles with the adjacency data the original map loader
-/// derives (rw_collision_mesh ExtendedEdgeCosine / MakeEdgeCode): shared
-/// edges carry the cosine between the two faces, flat or concave seams lose
-/// their convex bit and vertices surrounded by coplanar faces are disabled,
-/// so wheels roll across seams instead of striking internal edges. Edges
-/// without a partner (patch borders, T-junctions of merged blocks) are flat.
-fn build_triangles(
+/// Locate an actual jump, including curbs on sloping pavement. Smooth slopes
+/// lose their height difference as the interval shrinks; a step retains it.
+pub(crate) fn step_between(probe: &mut dyn GroundProbe, start: GtaVec, end: GtaVec) -> Option<(GtaVec, GtaVec)> {
+    let (mut a, mut b) = (start, end);
+    let mut checked_bevel = false;
+    for _ in 0..8 {
+        if (a.z - b.z).abs() < 0.03 { return None; }
+        let p = a.lerp(b, 0.5);
+        let z = probe.down(p.x, p.y, a.z.max(b.z) + 0.5, a.z.min(b.z) - 1.5)?;
+        let run = ((a.x-b.x).powi(2) + (a.y-b.y).powi(2)).sqrt();
+        // A short steep bevel between two walkable surfaces is a curb face.
+        // Test both plateaus so a continuous quarter-pipe remains a ramp.
+        if !checked_bevel && run <= 0.08 && (a.z-b.z).abs() / run.max(1e-6) > 1.5
+            && (a.z-z).abs()>0.006 && (b.z-z).abs()>0.006 {
+            checked_bevel = true;
+            let (high, low) = if a.z > b.z { (a,b) } else { (b,a) };
+            let along = GtaVec::new((high.x-low.x)/run, (high.y-low.y)/run, 0.);
+            let locations = [high.add(along.scale(0.1)), high.add(along.scale(0.15)),
+                low.sub(along.scale(0.1)), low.sub(along.scale(0.15))];
+            let heights: Vec<_> = locations.iter().map(|p|
+                probe.down(p.x,p.y,high.z+0.5,low.z-1.5)).collect();
+            if let [Some(h),Some(hf),Some(l),Some(lf)] = heights.as_slice() {
+                if (hf-h).abs() < 0.025 && (l-lf).abs() < 0.025 {
+                    let cut = high.lerp(low,0.5);
+                    let offset = |p:GtaVec| (cut.x-p.x)*along.x + (cut.y-p.y)*along.y;
+                    let hz = h + offset(locations[0])*(hf-h)/0.05;
+                    let lz = l + offset(locations[2])*(l-lf)/0.05;
+                    if (0.03..=0.35).contains(&(hz-lz)) {
+                        return Some((GtaVec::new(cut.x,cut.y,hz),GtaVec::new(cut.x,cut.y,lz)));
+                    }
+                }
+            }
+        }
+        let middle = GtaVec::new(p.x, p.y, z);
+        if (a.z - z).abs() >= (b.z - z).abs() { b = middle; }
+        else { a = middle; }
+    }
+    if (a.z - b.z).abs() < 0.03 { return None; }
+    let (high, mut low) = if a.z > b.z { (a, b) } else { (b, a) };
+    low.x = high.x; low.y = high.y;
+    Some((high, low))
+}
+
+fn step_surfaces(probe: &mut dyn GroundProbe, quad: [GtaVec; 4]) -> Option<Vec<Vec<GtaVec>>> {
+    let cuts: [Option<(GtaVec, GtaVec)>; 4] = std::array::from_fn(|i|
+        step_between(probe, quad[i], quad[(i + 1) % 4]));
+    let crossing: Vec<_> = (0..4).filter(|&i| cuts[i].is_some()).collect();
+    if crossing.len() != 2 { return None; }
+    let first = crossing[0];
+    let mut raised = [false; 4];
+    raised[first] = quad[first].z > quad[(first + 1) % 4].z;
+    for offset in 0..3 {
+        let i = (first + offset) % 4;
+        raised[(i + 1) % 4] = if cuts[i].is_some() { !raised[i] } else { raised[i] };
+    }
+    let mut out = Vec::new();
+    for side in [false, true] {
+        let mut polygon = Vec::new();
+        for i in 0..4 {
+            if raised[i] == side { polygon.push(quad[i]); }
+            if let Some((high, low)) = cuts[i] { polygon.push(if side { high } else { low }); }
+        }
+        out.push(polygon);
+    }
+    let entering = crossing.iter().copied().find(|&i| !raised[i])?;
+    let leaving = crossing.iter().copied().find(|&i| raised[i])?;
+    let (a, al) = cuts[entering]?;
+    let (b, bl) = cuts[leaving]?;
+    out.push(vec![a, b, bl, al]);
+    Some(out)
+}
+fn build_surface(
+    probe: &mut dyn GroundProbe,
     samples: &[Option<GtaVec>],
     faces: Vec<[usize; 3]>,
+    partials: Vec<[usize; 3]>,
     frame: &Frame,
     material: RetailContactMaterial,
 ) -> Vec<WorldTriangle> {
-    let points: Vec<Vector3> = samples
-        .iter()
-        .map(|s| s.map_or(Vector3::new(0.0, 0.0, 0.0), |p| frame.to_skate(p)))
-        .collect();
-    let mut upward = Vec::with_capacity(faces.len());
-    for face in faces {
-        if face.iter().any(|&k| samples[k].is_none()) {
-            continue;
-        }
-        let v = face.map(|k| points[k]);
-        let ordered = upward_vertices(v);
-        let face = if ordered[1].x == v[1].x && ordered[1].y == v[1].y && ordered[1].z == v[1].z {
-            face
-        } else {
-            [face[0], face[2], face[1]]
-        };
-        if normal(face.map(|k| points[k])).is_some_and(|n| n.y > 0.0) {
-            upward.push(face);
+    let mut points = Vec::new();
+    let mut ids = std::collections::HashMap::new();
+    let mut triangles = Vec::new();
+    for pair in faces.chunks_exact(2) {
+        let quad = [pair[0][0], pair[0][1], pair[0][2], pair[1][2]].map(|k| samples[k].unwrap());
+        let polygons = step_surfaces(probe, quad).unwrap_or_else(|| vec![quad.to_vec()]);
+        for polygon in polygons {
+            let indices: Vec<usize> = polygon.iter().map(|&p| {
+                let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+                *ids.entry(key).or_insert_with(|| {
+                    let id = points.len();
+                    points.push(frame.to_skate(p));
+                    id
+                })
+            }).collect();
+            for i in 1..indices.len() - 1 {
+                triangles.push([indices[0], indices[i], indices[i + 1]]);
+            }
         }
     }
-    mesh_triangles(&points, &upward, material)
+    for face in partials {
+        let indices = face.map(|k| {
+            let p=samples[k].unwrap();
+            *ids.entry([p.x.to_bits(),p.y.to_bits(),p.z.to_bits()]).or_insert_with(|| {
+                let id=points.len();points.push(frame.to_skate(p));id
+            })
+        });
+        triangles.push(indices);
+    }
+    mesh_triangles(&points, &triangles, material)
 }
 
 fn normal([a, b, c]: [Vector3; 3]) -> Option<Vector3> {
@@ -164,7 +243,7 @@ fn normal([a, b, c]: [Vector3; 3]) -> Option<Vector3> {
 }
 
 /// Triangles of any orientation (normal = (b - a) x (c - a), facing out of
-/// a solid), with the shared-edge data described for `build_triangles`.
+/// a solid), with shared-edge cosines and disabled coplanar internal vertices.
 pub fn mesh_triangles(points: &[Vector3], faces: &[[usize; 3]], material: RetailContactMaterial) -> Vec<WorldTriangle> {
     let point = |k: usize| points[k];
     let mut ids = Vec::with_capacity(faces.len());
@@ -423,9 +502,54 @@ mod tests {
         let settings = PatchSettings::default();
         let patch = sample(&mut Curb, &frame, GtaVec::default(), &settings, MATERIAL);
         let full = settings.cells * settings.cells * 2;
-        assert!(patch.triangles.len() > 2 && patch.triangles.len() < full / 2, "{}", patch.triangles.len());
+        // The refined top, bottom and vertical face add triangles only at the
+        // step; the surrounding planar blocks still beat a full grid.
+        assert!(patch.triangles.len() > 2 && patch.triangles.len() < full, "{}", patch.triangles.len());
         let steep = patch.triangles.iter().filter(|t| t.triangle.feature.normal.y < 0.99).count();
         assert!(steep > 0, "the curb face is represented");
+        for t in &patch.triangles {
+            let n = t.triangle.feature.normal;
+            assert!(n.y > 0.999 || n.y.abs() < 0.001, "step became a ramp: {n:?}");
+            if n.y.abs() < 0.001 {
+                assert!(n.x < -0.999, "curb face must face the low side: {n:?}");
+                for p in t.triangle.vertices {
+                    assert!((p.x - 0.3).abs() < 0.002, "face moved with the grid: {p:?}");
+                }
+            }
+        }
+    }
+
+    struct InclinedCurb { bevel: bool }
+    impl GroundProbe for InclinedCurb {
+        fn down(&mut self,x:f32,y:f32,top:f32,bottom:f32) -> Option<f32> {
+            let step = if self.bevel { ((x-0.3)/0.05).clamp(0.,1.)*0.15 }
+                else if x>=0.3 {0.15} else {0.};
+            let z = 0.05*x + 0.08*y + step;
+            (top>=z && bottom<=z).then_some(z)
+        }
+    }
+    #[test]
+    fn inclined_and_bevelled_curbs_have_a_face_instead_of_an_entry_ramp() {
+        for bevel in [false,true] {
+            let patch = sample(&mut InclinedCurb{bevel},&Frame::new(GtaVec::default()),
+                GtaVec::default(),&PatchSettings::default(),MATERIAL);
+            let mut sides = 0;
+            for t in &patch.triangles {
+                let n = t.triangle.feature.normal;
+                assert!(n.y.abs()<0.001 || n.y>0.99, "artificial curb ramp, bevel {bevel}: {n:?}");
+                if n.y.abs()<0.001 { sides+=1; }
+            }
+            assert!(sides>0,"missing curb face, bevel {bevel}");
+        }
+    }
+
+    #[test]
+    fn a_continuous_steep_transition_is_not_a_curb() {
+        struct Ramp;
+        impl GroundProbe for Ramp {
+            fn down(&mut self,x:f32,_y:f32,_top:f32,_bottom:f32) -> Option<f32> { Some(3.*x) }
+        }
+        assert!(step_between(&mut Ramp,GtaVec::new(0.,0.,0.),GtaVec::new(0.1,0.,0.3)).is_none());
     }
 
     #[test]

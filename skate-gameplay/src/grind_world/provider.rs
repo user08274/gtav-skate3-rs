@@ -146,6 +146,64 @@ impl StaticProvider {
 
     pub fn primitives(&self) -> &[Primitive] { &self.primitives }
 
+    /// Extend a host world without moving any already-published primitive or
+    /// changing its owner/GUID. Clip overlaps before appending continuations.
+    pub fn extended(&self, rails: &[skate_data::skate_map::Rail]) -> Result<Self,String> {
+        let incoming=Self::authored(rails)?;
+        let mut primitives=self.primitives.clone();
+        let mut metadata=self.metadata.clone();
+        let mut next_owner=primitives.iter().map(|p|p.owner).max().unwrap_or(0)+1;
+        for (candidate, info) in incoming.primitives.iter().zip(&incoming.metadata) {
+            let delta:[f32;3]=std::array::from_fn(|i|candidate.end[i]-candidate.start[i]);
+            let square=delta.iter().map(|v|v*v).sum::<f32>();
+            if square<1e-8 {continue;}
+            let project=|p:[f32;4]|(0..3).map(|i|(p[i]-candidate.start[i])*delta[i]).sum::<f32>()/square;
+            let on_line=|p:[f32;4],t:f32|(0..3).map(|i|(p[i]-candidate.start[i]-t*delta[i]).powi(2)).sum::<f32>()<0.0004;
+            let mut intervals=Vec::new();
+            for old in &primitives {
+                let a=project(old.start);let b=project(old.end);
+                if on_line(old.start,a) && on_line(old.end,b) {
+                    let lo=a.min(b).max(0.);let hi=a.max(b).min(1.);
+                    if hi>lo {intervals.push((lo,hi));}
+                }
+            }
+            intervals.sort_by(|a,b|a.0.total_cmp(&b.0));
+            let mut gaps=Vec::new();let mut end=0f32;
+            for (a,b) in intervals {if a>end {gaps.push((end,a));}end=end.max(b);}
+            if end<1. {gaps.push((end,1.));}
+            for (a,b) in gaps {
+                if (b-a)*square.sqrt()<0.025 {continue;}
+                let point=|t:f32|std::array::from_fn(|i|if i<3{candidate.start[i]+t*delta[i]}else{1.});
+                let mut primitive=Primitive{start:point(a),end:point(b),owner:next_owner};
+                let mut native=*info;
+                let close=|a:[f32;4],b:[f32;4]|(0..3).map(|i|(a[i]-b[i]).powi(2)).sum::<f32>()<0.0009;
+                if let Some(index)=primitives.iter().position(|p|
+                    close(p.start,primitive.start)||close(p.start,primitive.end)||
+                    close(p.end,primitive.start)||close(p.end,primitive.end)) {
+                    primitive.owner=primitives[index].owner;
+                    native.spline_guids=metadata[index].spline_guids;
+                    native.segment_index=metadata.iter().zip(&primitives).filter(|(_,p)|p.owner==primitive.owner)
+                        .map(|(m,_)|m.segment_index).max().unwrap_or(0)+1;
+                }else{next_owner+=1;}
+                primitives.push(primitive);metadata.push(native);
+            }
+        }
+        let spatial:Vec<_>=primitives.iter().map(|p|Bounds {
+            min:std::array::from_fn(|i|p.start[i].min(p.end[i])),
+            max:std::array::from_fn(|i|p.start[i].max(p.end[i]))}).collect();
+        let assets=if let Some(bounds)=spatial.iter().copied().reduce(Bounds::union) {
+            let bounds=bounds.padded();vec![Asset {
+                #[cfg(test)] source:SourceIdentity{stream_file:String::new(),asset_id:"host-streamed".into(),section_index:0,section_offset:0},
+                bounds,indices:(0..primitives.len()).collect(),tree:Octree::new(bounds,spatial)?}]
+        }else{Vec::new()};
+        Ok(Self {
+            #[cfg(test)] rail_guids:self.rail_guids.clone(),
+            #[cfg(test)] source_for_primitive:vec![0;primitives.len()],
+            #[cfg(test)] source_rail_indices:primitives.iter().map(|p|p.owner-1).collect(),
+            primitives,metadata,assets,
+        })
+    }
+
     pub fn metadata(&self, primitive: usize) -> Option<&spline::PrimitiveMetadata> {
         self.metadata.get(primitive)
     }

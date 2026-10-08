@@ -23,6 +23,23 @@ fn no_map_keeps_current_flat_course_empty() {
 }
 
 #[test]
+fn streaming_clips_overlap_and_preserves_active_primitive_identity(){
+    let rail=|end:f32|Rail{name:"stream".into(),closed:false,points:vec![[0.,0.,0.],[end,0.,0.]],native:None};
+    let old=StaticProvider::authored(&[rail(4.)]).unwrap();
+    let new=old.extended(&[rail(10.)]).unwrap();
+    assert_eq!(new.primitives().len(),2);
+    assert_eq!(new.primitives()[0].start,old.primitives()[0].start);
+    assert_eq!(new.primitives()[0].end,old.primitives()[0].end);
+    assert_eq!(new.primitives()[0].owner,old.primitives()[0].owner);
+    assert_eq!(new.metadata(0),old.metadata(0));
+    assert_eq!(new.primitives()[1].start,new.primitives()[0].end);
+    assert_eq!(new.primitives()[1].owner,old.primitives()[0].owner);
+    assert_eq!(new.metadata(1).unwrap().spline_guids,old.metadata(0).unwrap().spline_guids);
+    assert_eq!(new.extended(&[rail(10.)]).unwrap().primitives().len(),2,"repeated updates duplicated geometry");
+    assert!(!new.query([5.,-1.,-1.],[9.,1.,1.]).unwrap().is_empty());
+}
+
+#[test]
 fn native_tiny_and_duplicate_knots_are_not_dropped() {
     let bytes = spline::build_rails(&[native(1, 0.), native(2, 0.0001)]).unwrap();
     let (entries, metadata) = spline::decoded_from_blob(&bytes).unwrap();

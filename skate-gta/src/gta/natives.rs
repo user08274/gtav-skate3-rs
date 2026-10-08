@@ -288,46 +288,92 @@ pub fn set_cam_fov(cam: Cam, fov: f32) {
 }
 
 /// Synchronous line-of-sight probe; returns the hit point.
-pub fn probe(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<GtaVec> {
-    let handle = ret_i32(call!(
-        0x377906D8A31E5586, from.x, from.y, from.z, to.x, to.y, to.z, flags, ignore, 7i32,
-    ));
-    let mut hit: u64 = 0;
-    let mut end = NVector3::default();
-    let mut normal = NVector3::default();
-    let mut entity: u64 = 0;
-    let status = ret_i32(call!(
-        0x3D87450E15D98694,
-        handle,
-        &mut hit as *mut u64,
-        &mut end as *mut NVector3,
-        &mut normal as *mut NVector3,
-        &mut entity as *mut u64,
-    ));
-    (status == 2 && hit as u32 != 0).then(|| GtaVec::new(end.x, end.y, end.z))
+pub fn probe(from:GtaVec,to:GtaVec,flags:i32,ignore:Entity)->Option<GtaVec> {
+    probe_with_normal(from,to,flags,ignore).map(|(p,_)|p)
 }
 
-/// Like `probe`, also returning the surface normal at the hit.
-pub fn probe_with_normal(from: GtaVec, to: GtaVec, flags: i32, ignore: Entity) -> Option<(GtaVec, GtaVec)> {
-    let handle = ret_i32(call!(
-        0x377906D8A31E5586, from.x, from.y, from.z, to.x, to.y, to.z, flags, ignore, 7i32,
-    ));
-    let mut hit: u64 = 0;
-    let mut end = NVector3::default();
-    let mut normal = NVector3::default();
-    let mut entity: u64 = 0;
-    let status = ret_i32(call!(
-        0x3D87450E15D98694,
-        handle,
-        &mut hit as *mut u64,
-        &mut end as *mut NVector3,
-        &mut normal as *mut NVector3,
-        &mut entity as *mut u64,
-    ));
-    (status == 2 && hit as u32 != 0)
-        .then(|| (GtaVec::new(end.x, end.y, end.z), GtaVec::new(normal.x, normal.y, normal.z)))
+/// Repeat past small loose props; their visual detail is not a curb or rail.
+pub fn probe_with_normal(mut from:GtaVec,to:GtaVec,flags:i32,mut ignore:Entity)->Option<(GtaVec,GtaVec)> {
+    for _ in 0..6 {
+        let handle=ret_i32(call!(0x377906D8A31E5586,from.x,from.y,from.z,to.x,to.y,to.z,flags,ignore,7i32));
+        let mut hit=0u64;let mut end=NVector3::default();let mut normal=NVector3::default();let mut entity=0u64;
+        let status=ret_i32(call!(0x3D87450E15D98694,handle,&mut hit as *mut u64,&mut end as *mut NVector3,
+            &mut normal as *mut NVector3,&mut entity as *mut u64));
+        if status!=2 || hit as u32==0{return None;}
+        let p=GtaVec::new(end.x,end.y,end.z);
+        // Shape-test hits may refer to map collision entities that are not
+        // safe model-query handles. Never query their model or dimensions.
+        let small=known_litter(entity as Entity);
+        if !small{return Some((p,GtaVec::new(normal.x,normal.y,normal.z)));}
+        ignore=entity as Entity;
+        from=p.add(to.sub(from).normalized().scale(0.005));
+    }
+    None
 }
 
+#[derive(Default)]
+struct LitterCache {
+    frames:u32,
+    small:std::collections::HashSet<Entity>,
+    pending:std::collections::VecDeque<Entity>,
+    models:std::collections::HashMap<u32,bool>,
+}
+thread_local! {static LITTER:std::cell::RefCell<LitterCache>=std::cell::RefCell::new(LitterCache::default());}
+
+fn known_litter(entity:Entity)->bool {
+    entity>0 && LITTER.with(|cache|cache.borrow().small.contains(&entity))
+}
+
+/// Only classify live script handles returned by ScriptHookV's object pool.
+/// Budget the work and never invoke another native from a shape-hit lookup.
+pub fn refresh_litter() {
+    let refresh=LITTER.with(|cache|{
+        let mut cache=cache.borrow_mut();cache.frames=cache.frames.wrapping_add(1);
+        cache.frames%600==1
+    });
+    if refresh {
+        let objects=super::shv::world_entities(super::shv::Pool::Objects);
+        LITTER.with(|cache|{
+            let mut cache=cache.borrow_mut();
+            cache.small.retain(|e|objects.contains(e));cache.pending=objects.into();
+        });
+    }
+    let objects=LITTER.with(|cache|{
+        let mut cache=cache.borrow_mut();let count=cache.pending.len().min(8);
+        cache.pending.drain(..count).collect::<Vec<_>>()
+    });
+    for object in objects {
+        if object<=0 || !does_entity_exist(object){continue;}
+        let model=get_entity_model(object);
+        if model==0 || !is_model_in_cdimage(model){continue;}
+        let cached=LITTER.with(|cache|cache.borrow().models.get(&model).copied());
+        let small=cached.unwrap_or_else(||{
+            let (min,max)=get_model_dimensions(model);
+            crate::collision_filter::small_litter(min,max)
+        });
+        LITTER.with(|cache|{
+            let mut cache=cache.borrow_mut();
+            if cache.models.len()>2048{cache.models.clear();}
+            cache.models.insert(model,small);
+            if small{cache.small.insert(object);}else{cache.small.remove(&object);}
+        });
+    }
+}
+
+#[cfg(test)]mod litter_tests {
+    use super::*;
+    #[test]fn unknown_collision_hits_do_not_invoke_model_natives(){
+        // No ScriptHook API has been initialized in this test. Any native
+        // call for these unknown map handles would panic instead of passing.
+        LITTER.with(|cache|{*cache.borrow_mut()=LitterCache::default();cache.borrow_mut().small.insert(123);});
+        assert!(!known_litter(0));
+        assert!(!known_litter(-1));
+        assert!(!known_litter(i32::MAX));
+        assert!(!known_litter(124));
+        assert!(known_litter(123));
+        LITTER.with(|cache|cache.borrow_mut().small.clear());
+    }
+}
 fn text_component(text: &str) -> CString {
     CString::new(text.replace('\0', "")).unwrap_or_default()
 }

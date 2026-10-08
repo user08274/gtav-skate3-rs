@@ -143,7 +143,7 @@ fn start(config: &Config, data: &mut Option<Collections>) -> Result<Active, Stri
 
 fn run() {
     let config = load_config();
-    log(&format!("SkateGTA loaded (build {BUILD}, PedPoseMode {:?})", config.pose_mode));
+    log(&format!("SkateGTA v10 loaded (build {BUILD}, PedPoseMode {:?})", config.pose_mode));
     let mut data: Option<Collections> = None;
     let mut session: Option<Active> = None;
     let mut key_was_down = false;
@@ -154,13 +154,13 @@ fn run() {
         if toggled {
             match session.take() {
                 Some(s) => s.end(),
-                None => match start(&config, &mut data) {
+                None => {log("v6.1 F5: starting skate session"); match start(&config, &mut data) {
                     Ok(s) => session = Some(s),
                     Err(error) => {
                         log(&error);
                         n::notify(&format!("SkateGTA: {error}"));
                     }
-                },
+                }},
             }
         }
         if let Some(s) = session.as_mut() {
@@ -194,10 +194,10 @@ struct GtaProbe {
 
 impl GroundProbe for GtaProbe {
     fn down(&mut self, x: f32, y: f32, top: f32, bottom: f32) -> Option<f32> {
-        n::probe(GtaVec::new(x, y, top), GtaVec::new(x, y, bottom), self.flags, self.ignore).map(|p| p.z)
+        n::probe(GtaVec::new(x, y, top), GtaVec::new(x, y, bottom), self.flags | 16, self.ignore).map(|p| p.z)
     }
     fn toward(&mut self, from: GtaVec, to: GtaVec) -> Option<(GtaVec, GtaVec)> {
-        n::probe_with_normal(from, to, self.flags, self.ignore)
+        n::probe_with_normal(from, to, self.flags | 16, self.ignore)
     }
 }
 
@@ -565,12 +565,14 @@ struct RideSession {
 impl RideSession {
     fn start(config: &Config, root: &std::path::Path) -> Result<Self, String> {
         let ped = n::player_ped_id();
+        if ped<=0 || !n::does_entity_exist(ped){return Err("player is not ready yet".into());}
         if n::is_entity_dead(ped) || n::is_ped_in_any_vehicle(ped) {
             return Err("get out of the vehicle first".into());
         }
         let position = n::get_entity_coords(ped);
         let heading = n::get_entity_heading(ped);
         let mut probe = GtaProbe { flags: config.probe_flags, ignore: ped };
+        log("v6.1 F5: initial ground probe (hit handles are not queried)");
         let ground = probe
             .down(position.x, position.y, position.z + 1.0, position.z - 3.0)
             .ok_or("no ground under the player")?;
@@ -586,7 +588,8 @@ impl RideSession {
         let mut ride = ride;
         ride.game.set_low_camera(config.low_camera);
         ride.grind_edges = config.grind_edges;
-        ride.find_walls = config.collide_walls;
+        ride.native_collision = true;
+        ride.find_walls = false;
         let skate3_board = config.board_model.eq_ignore_ascii_case("skate3");
         let board_model = skate3_board.then(|| load_board_model(root)).flatten();
         let prop = if config.board_model.eq_ignore_ascii_case("none") || skate3_board {
@@ -666,6 +669,8 @@ impl RideSession {
         }
         let elapsed = std::time::Duration::from_secs_f32(n::get_frame_time().clamp(0.0, 0.25));
         let pad = read_pad();
+        let work_started=std::time::Instant::now();
+        n::refresh_litter();
         let peds = if self.collide_entities {
             let (boxes, peds) = self.entities.gather(self.ped, self.prop, self.ride.hips_position());
             self.ride.set_entities(boxes);
@@ -674,10 +679,17 @@ impl RideSession {
             Vec::new()
         };
         self.ride.refresh_world(&mut self.probe)?;
+        let world_ms=work_started.elapsed().as_secs_f32()*1000.;
+        let ticks_started=std::time::Instant::now();
         let had_hud = self.ride.hud.is_some();
-        self.ride
-            .advance_game(elapsed, 4, pad)
-            .map_err(|e| format!("gameplay stopped: {e}"))?;
+        let flags=self.probe.flags;
+        self.probe.flags|=6; // Actual vehicle/ped collision during live queries.
+        let advanced=self.ride.advance_native(elapsed,4,pad,&mut self.probe);
+        self.probe.flags=flags;
+        advanced.map_err(|e|format!("gameplay stopped: {e}"))?;
+        if config.debug_draw && self.frames%120==0 {
+            log(&format!("Performance v10: sampling/entities {world_ms:.2} ms, gameplay/native contacts {:.2} ms",ticks_started.elapsed().as_secs_f32()*1000.));
+        }
         if !peds.is_empty() {
             let velocity = self.ride.deck_axes().forward.scale(self.ride.game.board_speed());
             let skater = [self.ride.deck_position(), self.ride.hips_position()];
@@ -722,6 +734,19 @@ impl RideSession {
         let actual = coords::heading_degrees(n::get_entity_forward_vector(self.ped));
         let actual_origin = n::get_entity_coords(self.ped);
         self.frames += 1;
+        if config.debug_draw && self.frames % 120 == 1 {
+            let at=self.ride.deck_position();
+            log(&format!("Geometry v10 native at {:.2},{:.2},{:.2}: wall/entity boxes {}, grind lines {}, rail revision {}",
+                at.x,at.y,at.z,self.ride.obstacles().len(),self.ride.grind_lines().len(),self.ride.rails.version));
+        }
+        if config.debug_draw && self.ride.game.grinding() && self.frames % 30 == 1 {
+            let at=self.ride.deck_position();
+            let surface=self.probe.down(at.x,at.y,at.z+0.25,at.z-0.75);
+            let root_delta=self.ride.game.bone_names().iter().position(|n|n=="SKATEBOARD_ROOT")
+                .and_then(|i|view.bones.get(i)).map(|b|b.0.z-view.deck.z);
+            log(&format!("Grind v6 at {:.3},{:.3},{:.3}: deck above GTA {:?}, render root offset {:?}",
+                at.x,at.y,at.z,surface.map(|z|at.z-z),root_delta));
+        }
         let off = ((actual - heading + 540.0) % 360.0) - 180.0;
         if self.frames % 120 == 1 || (off.abs() > 2.0 && self.frames % 30 == 1) {
             log(&format!(
@@ -807,18 +832,6 @@ impl RideSession {
     }
 
     fn draw_debug(&self) {
-        for o in self.ride.obstacles() {
-            let c = o.corners();
-            for (a, b) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)] {
-                n::draw_line(c[a], c[b], [255, 80, 80, 160]);
-            }
-        }
-        for line in self.ride.grind_lines() {
-            for w in line.windows(2) {
-                let lift = GtaVec::new(0.0, 0.0, 0.02);
-                n::draw_line(w[0].add(lift), w[1].add(lift), [255, 220, 0, 255]);
-            }
-        }
         for line in self.ride.grind_lines() {
             for w in line.windows(2) {
                 let lift = GtaVec::new(0.0, 0.0, 0.02);

@@ -1,6 +1,8 @@
 //! Embedding API: one skater with the complete Skate 3 gameplay pipeline
 //! (controller graphs, physical states, shared board/skater solve, camera),
 //! loaded from the player's converted files, in a world the host supplies.
+/// Contact-only geometry for narrow tubes confirmed by the host's rays.
+pub const HOST_RAIL_TAG:u32=0x8000_0000;
 use crate::{
     camera::CameraRuntime,
     difficulty::Difficulty,
@@ -125,8 +127,8 @@ impl Game {
     }
 
     /// Grind lines in skate space (polylines along ledge, curb and rail tops).
-    /// Replacing them mid-grind would drop the rail under the board, so hosts
-    /// should only call this while `grinding()` is false.
+    /// In air or during a grind append only uncovered sections, preserving all active
+    /// primitive indices, owners and GUIDs. Otherwise replace the local world.
     pub fn set_grind_rails(&mut self, rails: &[Vec<skate_core::math::Vector3>]) -> Result<(), String> {
         let rails: Vec<skate_data::skate_map::Rail> = rails
             .iter()
@@ -139,7 +141,9 @@ impl Game {
                 native: None,
             })
             .collect();
-        let provider = self.physics.replace_grind_rails(&rails)?;
+        let settled=matches!(self.state() as u32,100..=105|500|502);
+        let provider = if !settled{self.physics.extend_grind_rails(&rails)?}
+            else{self.physics.replace_grind_rails(&rails)?};
         self.skater.trajectory.bind_grind_world(provider);
         Ok(())
     }
@@ -155,6 +159,12 @@ impl Game {
         queries: Option<std::sync::Arc<dyn skate_core::physics::board_world::ExternalQueries>>,
     ) {
         self.physics.set_external_queries(queries);
+    }
+
+    /// Use host shape-test faces as the physical world; retain the sampled
+    /// terrain for controller metadata and ground classification only.
+    pub fn set_native_contacts(&mut self, enabled: bool) {
+        self.physics.native_contacts = enabled;
     }
 
     pub fn tick_period(&self) -> Duration {

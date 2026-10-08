@@ -4,12 +4,19 @@
 const STACK_BYTES: usize = 32 << 20;
 
 pub fn run<R: Send>(f: impl FnOnce() -> Result<R, String> + Send) -> Result<R, String> {
+    run_serviced(f, || std::thread::sleep(std::time::Duration::from_micros(250)))
+}
+
+/// Keep native calls on the calling script fiber while gameplay requests them
+/// from its large-stack worker. Never invoke GTA from that worker thread.
+pub fn run_serviced<R:Send>(f:impl FnOnce()->Result<R,String>+Send,mut service:impl FnMut())->Result<R,String> {
     std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
             .name("skate-gameplay".into())
             .stack_size(STACK_BYTES)
             .spawn_scoped(scope, f)
             .map_err(|e| format!("cannot start the gameplay thread: {e}"))?;
+        while !worker.is_finished(){service();}
         worker.join().unwrap_or_else(|panic| {
             let text = panic
                 .downcast_ref::<String>()

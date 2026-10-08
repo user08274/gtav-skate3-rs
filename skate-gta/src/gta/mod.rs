@@ -5,6 +5,7 @@ mod natives;
 mod shv;
 mod entities;
 mod hook;
+mod sound;
 mod skeleton;
 mod watch;
 
@@ -557,6 +558,8 @@ struct RideSession {
     collide_entities: bool,
     /// The Skate 3 board drawn on the physics board (`BoardModel = skate3`).
     board_model: Option<std::sync::Arc<crate::board_model::BoardModel>>,
+    /// The skater's Skate 3 sounds (`Audio = 1`); the device thread plays its runtime.
+    audio: Option<skate_gameplay::game_audio::GameAudio>,
 }
 
 impl RideSession {
@@ -633,6 +636,7 @@ impl RideSession {
         if let Some(error) = &ride.hud_error {
             log(&format!("Skate 3 HUD unavailable: {error}"));
         }
+        let audio = if config.audio { start_audio(root, config.audio_volume) } else { None };
         let mut session = Self {
             ride,
             ped,
@@ -645,6 +649,7 @@ impl RideSession {
             entities: Default::default(),
             collide_entities: config.collide_entities,
             board_model,
+            audio,
         };
         session.present(config);
         n::notify(&format!("SkateGTA {BUILD}: Skate 3 on"));
@@ -680,6 +685,13 @@ impl RideSession {
             if knocked > 0 {
                 log(&format!("Knocked over {knocked} pedestrian(s) ({} this ride)", self.entities.knocked_total));
             }
+        }
+        sound::set_paused(n::is_pause_menu_active());
+        if let Some(audio) = &mut self.audio {
+            let rot = n::get_final_rendered_cam_rot();
+            let (pitch, yaw) = (rot.x.to_radians(), rot.z.to_radians());
+            let forward = GtaVec::new(-yaw.sin() * pitch.cos(), yaw.cos() * pitch.cos(), pitch.sin());
+            self.ride.audio_frame(audio, Some((n::get_final_rendered_cam_coord(), forward)), elapsed.as_secs_f32());
         }
         if let Some(error) = self.ride.world_error.take() {
             log(&format!("Ground sample skipped: {error}"));
@@ -825,6 +837,9 @@ impl RideSession {
 
     fn end(self) {
         watch::stop();
+        if self.audio.is_some() {
+            let _ = sound::set_runtime(None);
+        }
         n::set_ped_procedural_layers(self.ped, true);
         if let Some(cam) = self.cam {
             n::render_script_cams(false);
@@ -842,6 +857,44 @@ impl RideSession {
         n::set_entity_coords(self.ped, self.ride.hips_position());
         hud::with_painter(|p| p.clear());
         n::notify("SkateGTA: Skate 3 off");
+    }
+}
+
+/// The skater's Skate 3 sounds for one ride, playing on the sound device; None (logged)
+/// when the audio files are missing or the device is unavailable.
+fn start_audio(root: &std::path::Path, volume: f32) -> Option<skate_gameplay::game_audio::GameAudio> {
+    let started = std::time::Instant::now();
+    let root = root.to_path_buf();
+    let audio = crate::bigstack::run(move || skate_gameplay::game_audio::GameAudio::start(&root));
+    match audio {
+        Ok(audio) => {
+            let r = &audio.report;
+            log(&format!(
+                "Skate 3 audio on in {:.0} ms: {} projects, {} banks, Splice {:?}, rolling bed {}, wheels {}, contacts {}",
+                started.elapsed().as_secs_f32() * 1000.0,
+                r.projects,
+                r.banks.len(),
+                r.splice_banks,
+                r.rolling_bed,
+                r.wheels,
+                r.contacts
+            ));
+            if !r.silent_banks.is_empty() {
+                log(&format!("Skate 3 audio: no WAVs in private\\audio\\banks for {:?} (those sounds are silent)", r.silent_banks));
+            }
+            sound::set_volume(volume);
+            match sound::set_runtime(Some(audio.runtime())) {
+                Ok(()) => Some(audio),
+                Err(e) => {
+                    log(&format!("Skate 3 audio unavailable: {e}"));
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            log(&format!("Skate 3 audio unavailable: {e}"));
+            None
+        }
     }
 }
 

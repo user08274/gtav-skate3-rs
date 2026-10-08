@@ -265,6 +265,22 @@ impl Ride {
         Ok(due)
     }
 
+    /// One rendered frame of the Skate 3 sounds (after [`Ride::advance`]). `camera`: the
+    /// game camera's position and forward in GTA space (None: the Skate 3 camera).
+    pub fn audio_frame(&mut self, audio: &mut skate_gameplay::game_audio::GameAudio, camera: Option<(GtaVec, GtaVec)>, dt: f32) {
+        let camera = camera.map(|(p, f)| {
+            let (p, f) = (self.frame.to_skate(p), self.frame.dir_to_skate(f));
+            skate_gameplay::game_audio::Camera { position: [p.x, p.y, p.z], forward: [f.x, f.y, f.z] }
+        });
+        let overstep = self.accumulator.as_secs_f32() / self.game.tick_period().as_secs_f32().max(1e-6);
+        let game = &mut self.game;
+        crate::bigstack::run(move || {
+            game.audio_frame(audio, camera, dt, overstep);
+            Ok::<(), String>(())
+        })
+        .ok();
+    }
+
     /// The HUD as of the last tick (it is not interpolated).
     pub fn hud_sprites(&self) -> &[Sprite] {
         &self.hud_sprites

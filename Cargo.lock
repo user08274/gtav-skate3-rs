@@ -680,6 +680,7 @@ dependencies = [
  "half",
  "serde",
  "serde_json",
+ "skate-audio",
  "skate-core",
  "skate-data",
  "skate-dynamics",

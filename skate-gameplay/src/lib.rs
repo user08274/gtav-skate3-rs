@@ -11,6 +11,7 @@ pub mod animation_pose;
 pub mod camera;
 pub mod custom_difficulty;
 pub mod difficulty;
+pub mod game_audio;
 pub mod graph_host;
 pub mod graph_runtime;
 pub mod host;

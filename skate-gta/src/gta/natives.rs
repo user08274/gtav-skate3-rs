@@ -222,6 +222,13 @@ pub fn set_backface_culling(on: bool) {
 pub fn get_final_rendered_cam_coord() -> GtaVec {
     ret_vec(call!(0xA200EB1EE790F448))
 }
+/// GET_FINAL_RENDERED_CAM_ROT (degrees: pitch, roll, yaw; rotation order 2).
+pub fn get_final_rendered_cam_rot() -> GtaVec {
+    ret_vec(call!(0x5B4E4C817FCC2DFB, 2i32))
+}
+pub fn is_pause_menu_active() -> bool {
+    ret_bool(call!(0xB0034A223497FFCB))
+}
 /// In-game time of day, hours as a fraction.
 pub fn get_clock_time() -> f32 {
     ret_i32(call!(0x25223CA6B4D20B7F)) as f32 + ret_i32(call!(0x13D2B8ADD79640F2)) as f32 / 60.0

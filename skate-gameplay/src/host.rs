@@ -84,6 +84,9 @@ pub struct Game {
     graphs: StockGraphs,
     camera: CameraRuntime,
     accumulator: Duration,
+    /// The audio-state record of the ticks since the audio host last ran.
+    audio_cues: crate::game_audio::skate_events::Cues,
+    audio_seen: crate::game_audio::skate_events::Seen,
 }
 
 /// Where the original test course's spawn surface sits in skate space. Hosts
@@ -111,7 +114,7 @@ impl Game {
         let data = skate_data::collections::Collections::load(root)?;
         let deck = |field| data.float("physicsdeck", "default", field);
         let deck_size = [deck("DeckWidth")?, deck("DeckMidLength")? + 2.0 * deck("DeckBackEndSize")?];
-        Ok(Self { deck_size, physics, skater, controls, graphs, camera, accumulator: Duration::ZERO })
+        Ok(Self { deck_size, physics, skater, controls, graphs, camera, accumulator: Duration::ZERO, audio_cues: Default::default(), audio_seen: Default::default() })
     }
 
     /// Static collision near the skater, in skate space (metres, Y up), with
@@ -187,7 +190,20 @@ impl Game {
             &self.graphs,
             &input,
             &mut self.camera,
-        )
+        )?;
+        let dt = self.tick_period().as_secs_f32();
+        crate::game_audio::skate_events::observe(&self.physics, &mut self.skater, &mut self.audio_cues, &mut self.audio_seen, dt);
+        Ok(())
+    }
+
+    /// One rendered frame of the skater's Skate 3 sounds, on the ticks run since the
+    /// last call. `camera` in skate space (None: the Skate 3 camera); `dt` the frame's
+    /// seconds; `overstep` the fixed step's overstep fraction (the rendered wheels).
+    pub fn audio_frame(&mut self, audio: &mut crate::game_audio::GameAudio, camera: Option<crate::game_audio::Camera>, dt: f32, overstep: f32) {
+        let camera = camera.or_else(|| {
+            self.camera_frame().map(|c| { let (p, f) = (c.position, c.basis.columns[2]); crate::game_audio::Camera { position: [p[0], p[1], p[2]], forward: [f[0], f[1], f[2]] } })
+        });
+        audio.frame(&mut self.audio_cues, camera, dt, overstep.clamp(0.0, 1.0));
     }
 
     pub fn ticks(&self) -> u64 {

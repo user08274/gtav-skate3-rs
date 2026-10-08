@@ -36,6 +36,9 @@ pub struct Config {
     pub grind_edges: bool,
     pub collide_walls: bool,
     pub collide_entities: bool,
+    /// The Skate 3 sounds (rolling, grinds, pops, landings, bails) and their volume.
+    pub audio: bool,
+    pub audio_volume: f32,
     pub pose_mode: PoseMode,
     pub tuning: TestControlTuning,
     pub patch: PatchSettings,
@@ -65,6 +68,8 @@ impl Default for Config {
             grind_edges: true,
             collide_walls: true,
             collide_entities: true,
+            audio: true,
+            audio_volume: 1.0,
             pose_mode: PoseMode::Hook,
             tuning: TestControlTuning::default(),
             patch: PatchSettings::default(),
@@ -120,6 +125,10 @@ CollideEntities = 1
 GrindEdges = 1
 ; The original Skate 3 trick and score HUD (assets\\private\\hud)
 Hud = 1
+; The Skate 3 sounds of the skater (assets\\private\\audio): rolling, grinds,
+; pops, landings, bails. AudioVolume scales them (1 = as in Skate 3).
+Audio = 1
+AudioVolume = 1.0
 
 ; Board-only mode test controls
 PushForce = 40
@@ -182,6 +191,8 @@ impl Config {
                 "grindedges" => c.grind_edges = flag()?,
                 "collidewalls" => c.collide_walls = flag()?,
                 "collideentities" => c.collide_entities = flag()?,
+                "audio" => c.audio = flag()?,
+                "audiovolume" => c.audio_volume = float()?.clamp(0.0, 4.0),
                 "pedposemode" => c.pose_mode = match value.to_ascii_lowercase().as_str() {
                     "hook" => PoseMode::Hook,
                     "guard" => PoseMode::Guard,

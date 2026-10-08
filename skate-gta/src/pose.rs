@@ -49,6 +49,19 @@ pub const LINKS: [Link; 17] = [
     Link { tag: 0xCC4D, from: "RIGHTFOOT", to: "RIGHTTOEBASE", toward: 0x512D },
 ];
 
+/// GTA bones that copy the Skate 3 bone's rotation since calibration
+/// instead of pointing at the next joint: the spine, neck and head twist
+/// and turn, which directions alone cannot carry (a turned head became a
+/// tilted neck). Both skeletons stand upright facing forward at calibration.
+pub const ORIENTED: [(i32, &str); 6] = [
+    (SPINE0, "SPINE"),
+    (0x60F0, "SPINE1"),
+    (0x60F1, "SPINE2"),
+    (0x60F2, "SPINE3"),
+    (0x9995, "NECK"),
+    (0x796E, "HEAD"),
+];
+
 /// Rotation as a 3x3 matrix with column vectors, applied as `m * v`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Rot([GtaVec; 3]);
@@ -88,6 +101,31 @@ impl Rot {
             GtaVec::new(v.y * v.x * k - v.z, v.y * v.y * k + c, v.y * v.z * k + v.x),
             GtaVec::new(v.z * v.x * k + v.y, v.z * v.y * k - v.x, v.z * v.z * k + c),
         ])
+    }
+
+    fn transpose(&self) -> Rot {
+        let c = &self.0;
+        Rot([
+            GtaVec::new(c[0].x, c[1].x, c[2].x),
+            GtaVec::new(c[0].y, c[1].y, c[2].y),
+            GtaVec::new(c[0].z, c[1].z, c[2].z),
+        ])
+    }
+
+    /// Nearest rotation to three (almost) orthonormal axes, by Gram-Schmidt.
+    fn from_axes(axes: [GtaVec; 3]) -> Option<Rot> {
+        let x = axes[0];
+        if length(x) < 1e-4 {
+            return None;
+        }
+        let x = x.normalized();
+        let y = axes[1].sub(x.scale(dot(axes[1], x)));
+        if length(y) < 1e-4 {
+            return None;
+        }
+        let y = y.normalized();
+        let z = cross(x, y);
+        (dot(z, axes[2]) > 0.0).then_some(Rot([x, y, z]))
     }
 
     fn axis_angle(axis: GtaVec, angle: f32) -> Rot {
@@ -136,6 +174,9 @@ pub struct Rig {
     spine0: usize,
     thighs: (usize, usize),
     order: Vec<usize>,
+    /// ORIENTED bones found in the skeleton, with the Skate 3 bone's rest
+    /// rotation once calibrated.
+    oriented: Vec<(usize, &'static str, Option<Rot>)>,
 }
 
 impl Rig {
@@ -169,7 +210,20 @@ impl Rig {
                 return Err("ped skeleton hierarchy has a cycle".into());
             }
         }
-        Ok(Self { rest, parents, links, pelvis, spine0, thighs, order })
+        let oriented = ORIENTED
+            .iter()
+            .filter_map(|&(tag, name)| index_of(tag).filter(|&i| i < rest.len()).map(|i| (i, name, None)))
+            .collect();
+        Ok(Self { rest, parents, links, pelvis, spine0, thighs, order, oriented })
+    }
+
+    /// Records the Skate 3 bone rotations (model space) of the pose that
+    /// matches this rig's rest pose; returns how many bones calibrated.
+    pub fn calibrate(&mut self, bone_axes: impl Fn(&str) -> Option<[GtaVec; 3]>) -> usize {
+        for entry in &mut self.oriented {
+            entry.2 = bone_axes(entry.1).and_then(Rot::from_axes);
+        }
+        self.oriented.iter().filter(|e| e.2.is_some()).count()
     }
 
     pub fn bone_count(&self) -> usize {
@@ -203,7 +257,7 @@ impl Rig {
 
     /// Model-space pose for every bone. `joint` gives Skate 3 joint positions
     /// already in the ped's model space; missing joints leave bones at rest.
-    pub fn solve(&self, joint: impl Fn(&str) -> Option<GtaVec>) -> Vec<BonePose> {
+    pub fn solve(&self, joint: impl Fn(&str) -> Option<GtaVec>, bone_axes: impl Fn(&str) -> Option<[GtaVec; 3]>) -> Vec<BonePose> {
         let n = self.rest.len();
         let mut delta = vec![Rot::IDENTITY; n];
         let mut position: Vec<GtaVec> = self.rest.iter().map(|b| b.position).collect();
@@ -240,6 +294,14 @@ impl Rig {
             }
             position[b] = carried;
             delta[b] = parent_delta;
+            let turned = self.oriented.iter().find(|e| e.0 == b).and_then(|&(_, name, rest)| {
+                let now = bone_axes(name).and_then(Rot::from_axes)?;
+                Some(now.then(&rest?.transpose()))
+            });
+            if let Some(turn) = turned {
+                delta[b] = turn;
+                continue;
+            }
             if let Some((Some((_, toward)), link)) = link_of(b) {
                 let rest_dir = self.rest[*toward].position.sub(self.rest[b].position);
                 if let (Some(a), Some(c)) = (joint(link.from), joint(link.to)) {
@@ -353,7 +415,7 @@ mod tests {
     #[test]
     fn matching_skate_pose_reproduces_the_rest_pose() {
         let (rig, _) = rig();
-        let pose = rig.solve(skate_joints(false));
+        let pose = rig.solve(skate_joints(false), |_| None);
         for (i, (out, rest)) in pose.iter().zip(&rig.rest).enumerate() {
             assert!(close(out.position, rest.position), "bone {i}");
             for k in 0..3 {
@@ -365,7 +427,7 @@ mod tests {
     #[test]
     fn raised_arm_points_forward_and_children_follow() {
         let (rig, tags) = rig();
-        let pose = rig.solve(skate_joints(true));
+        let pose = rig.solve(skate_joints(true), |_| None);
         let at = |tag: i32| pose[tags.iter().position(|&t| t == tag).unwrap()];
         let upper = at(0xB1C5);
         let fore = at(0xEEEB);
@@ -383,11 +445,32 @@ mod tests {
         let turned = |name: &str| {
             skate_joints(false)(name).map(|p| v(-p.y, p.x, p.z)) // 90 degrees about up
         };
-        let pose = rig.solve(turned);
+        let pose = rig.solve(turned, |_| None);
         let head = pose[7].position;
         assert!(close(head, v(0.0, 0.0, 0.65)));
         let foot = pose[10].position;
         assert!(close(foot, v(0.0, -0.1, -0.9)), "{foot:?}");
         assert!(close(pose[1].axes[0], v(0.0, 1.0, 0.0)), "pelvis X axis turned to +Y");
+    }
+
+    #[test]
+    fn a_turned_skate_head_turns_the_ped_head_without_tilting_it() {
+        let (mut rig, tags) = rig();
+        // Skate 3 bone frames in their own convention: X up the bone, Z to the side.
+        let skate_rest = [v(0.0, 0.0, 1.0), v(0.0, -1.0, 0.0), v(1.0, 0.0, 0.0)];
+        assert_eq!(rig.calibrate(|_| Some(skate_rest)), 6);
+        let (s, c) = (40f32.to_radians().sin(), 40f32.to_radians().cos());
+        let yaw = |a: GtaVec| v(a.x * c - a.y * s, a.x * s + a.y * c, a.z);
+        let frames = |name: &str| Some(if name == "HEAD" { skate_rest.map(yaw) } else { skate_rest });
+        // The head joint itself also leans forward, which the old direction
+        // retarget turned into a tilted neck.
+        let joints = |name: &str| if name == "HEAD" { Some(v(0.0, 0.08, 0.62)) } else { skate_joints(false)(name) };
+        let pose = rig.solve(joints, frames);
+        let at = |tag: i32| pose[tags.iter().position(|&t| t == tag).unwrap()];
+        let (head, neck) = (at(0x796E), at(0x9995));
+        assert!(close(neck.axes[2], v(0.0, 0.0, 1.0)), "neck stays upright: {:?}", neck.axes);
+        assert!(close(head.axes[2], v(0.0, 0.0, 1.0)), "head does not tilt: {:?}", head.axes);
+        assert!(close(head.axes[1], yaw(v(0.0, 1.0, 0.0))), "head turned 40 degrees: {:?}", head.axes);
+        assert!(close(head.position, v(0.0, 0.0, 0.65)), "head stays on the neck");
     }
 }

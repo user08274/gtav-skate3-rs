@@ -632,6 +632,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "skate-audio"
+version = "0.1.0"
+source = "git+https://github.com/SK8-ENGINE/skate-3-rust-engine?rev=b3c967932a91d0db74275d14064bb6bdef8608af#b3c967932a91d0db74275d14064bb6bdef8608af"
+dependencies = [
+ "skate-audio-fma",
+]
+
+[[package]]
+name = "skate-audio-fma"
+version = "0.1.0"
+source = "git+https://github.com/SK8-ENGINE/skate-3-rust-engine?rev=b3c967932a91d0db74275d14064bb6bdef8608af#b3c967932a91d0db74275d14064bb6bdef8608af"
+
+[[package]]
 name = "skate-core"
 version = "0.1.0"
 source = "git+https://github.com/SK8-ENGINE/skate-3-rust-engine?rev=b3c967932a91d0db74275d14064bb6bdef8608af#b3c967932a91d0db74275d14064bb6bdef8608af"
@@ -667,6 +680,7 @@ dependencies = [
  "half",
  "serde",
  "serde_json",
+ "skate-audio",
  "skate-core",
  "skate-data",
  "skate-dynamics",
@@ -678,7 +692,9 @@ name = "skate-gta"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "miniz_oxide",
  "serde_json",
+ "skate-audio",
  "skate-core",
  "skate-data",
  "skate-gameplay",

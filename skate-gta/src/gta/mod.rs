@@ -5,6 +5,7 @@ mod natives;
 mod shv;
 mod entities;
 mod hook;
+mod sound;
 mod skeleton;
 mod watch;
 
@@ -359,6 +360,13 @@ fn read_pad() -> [f32; 18] {
 }
 
 /// Drives the player ped's skeleton with the Skate 3 pose.
+/// Skate 3 bone axes by name, turned into a ped model frame with `heading`.
+fn model_axes<'a>(view: &crate::ride::View, names: &'a [String], heading: f32) -> std::collections::HashMap<&'a str, [GtaVec; 3]> {
+    let (s, c) = heading.to_radians().sin_cos();
+    let turn = |d: GtaVec| GtaVec::new(d.x * c + d.y * s, -d.x * s + d.y * c, d.z);
+    names.iter().zip(&view.bone_axes).map(|(name, axes)| (name.as_str(), axes.map(turn))).collect()
+}
+
 struct Poser {
     rig: crate::pose::Rig,
     frames: std::cell::Cell<u32>,
@@ -473,14 +481,18 @@ impl Poser {
         };
         let joints: std::collections::HashMap<&str, GtaVec> =
             names.iter().zip(&view.bones).map(|(name, (p, _))| (name.as_str(), model(*p))).collect();
-        let pose = self.rig.solve(|name| joints.get(name).copied());
+        let axes = model_axes(view, names, heading);
+        let pose = self.rig.solve(|name| joints.get(name).copied(), |name| axes.get(name).copied());
         if matches!(tick, 150 | 300 | 450 | 600) {
             let mut list: Vec<String> = names
                 .iter()
                 .zip(&view.bones)
                 .map(|(name, (p, parent))| {
                     let q = model(*p);
-                    format!("{name} {parent} {:.5} {:.5} {:.5}", q.x, q.y, q.z)
+                    let a = axes.get(name.as_str()).map_or(String::new(), |a| {
+                        a.iter().map(|v| format!(" {:.4} {:.4} {:.4}", v.x, v.y, v.z)).collect()
+                    });
+                    format!("{name} {parent} {:.5} {:.5} {:.5}{a}", q.x, q.y, q.z)
                 })
                 .collect();
             list.sort();
@@ -544,6 +556,10 @@ struct RideSession {
     frames: u32,
     entities: entities::Entities,
     collide_entities: bool,
+    /// The Skate 3 board drawn on the physics board (`BoardModel = skate3`).
+    board_model: Option<std::sync::Arc<crate::board_model::BoardModel>>,
+    /// The skater's Skate 3 sounds (`Audio = 1`); the device thread plays its runtime.
+    audio: Option<skate_gameplay::game_audio::GameAudio>,
 }
 
 impl RideSession {
@@ -571,7 +587,13 @@ impl RideSession {
         ride.game.set_low_camera(config.low_camera);
         ride.grind_edges = config.grind_edges;
         ride.find_walls = config.collide_walls;
-        let prop = if config.board_model.eq_ignore_ascii_case("none") { None } else { spawn_prop(config, ride.deck_position()) };
+        let skate3_board = config.board_model.eq_ignore_ascii_case("skate3");
+        let board_model = skate3_board.then(|| load_board_model(root)).flatten();
+        let prop = if config.board_model.eq_ignore_ascii_case("none") || skate3_board {
+            None
+        } else {
+            spawn_prop(config, ride.deck_position())
+        };
         if config.ped_freeze {
             n::freeze_entity_position(ped, true);
         } else {
@@ -584,6 +606,15 @@ impl RideSession {
         n::set_entity_collision(ped, false, false);
         let poser = if config.ped_pose {
             Poser::new(ped, config.pose_mode)
+                .map(|mut poser| {
+                    // Skate 3's spawn pose stands square like the ped at rest.
+                    let heading = coords::heading_degrees(n::get_entity_forward_vector(ped));
+                    let view = ride.view();
+                    let axes = model_axes(&view, ride.game.bone_names(), heading);
+                    let calibrated = poser.rig.calibrate(|name| axes.get(name).copied());
+                    log(&format!("Ped pose: {calibrated} spine/neck/head bones follow Skate 3 rotations"));
+                    poser
+                })
                 .inspect_err(|e| {
                     log(&format!("Ped pose unavailable: {e}"));
                     n::notify(&format!("SkateGTA: ped pose unavailable ({e}), showing the skeleton"));
@@ -595,7 +626,7 @@ impl RideSession {
         if poser.is_none() {
             n::set_entity_visible(ped, false);
         }
-        let draw_body = config.debug_body || poser.is_none() || prop.is_none();
+        let draw_body = config.debug_body || poser.is_none() || (prop.is_none() && board_model.is_none());
         let cam = config.skate_camera.then(|| {
             let cam = n::create_cam();
             n::set_cam_active(cam, true);
@@ -605,6 +636,7 @@ impl RideSession {
         if let Some(error) = &ride.hud_error {
             log(&format!("Skate 3 HUD unavailable: {error}"));
         }
+        let audio = if config.audio { start_audio(root, config.audio_volume) } else { None };
         let mut session = Self {
             ride,
             ped,
@@ -616,6 +648,8 @@ impl RideSession {
             frames: 0,
             entities: Default::default(),
             collide_entities: config.collide_entities,
+            board_model,
+            audio,
         };
         session.present(config);
         n::notify(&format!("SkateGTA {BUILD}: Skate 3 on"));
@@ -651,6 +685,13 @@ impl RideSession {
             if knocked > 0 {
                 log(&format!("Knocked over {knocked} pedestrian(s) ({} this ride)", self.entities.knocked_total));
             }
+        }
+        sound::set_paused(n::is_pause_menu_active());
+        if let Some(audio) = &mut self.audio {
+            let rot = n::get_final_rendered_cam_rot();
+            let (pitch, yaw) = (rot.x.to_radians(), rot.z.to_radians());
+            let forward = GtaVec::new(-yaw.sin() * pitch.cos(), yaw.cos() * pitch.cos(), pitch.sin());
+            self.ride.audio_frame(audio, Some((n::get_final_rendered_cam_coord(), forward)), elapsed.as_secs_f32());
         }
         if let Some(error) = self.ride.world_error.take() {
             log(&format!("Ground sample skipped: {error}"));
@@ -704,8 +745,12 @@ impl RideSession {
             n::point_cam_at_coord(cam, camera.position.add(camera.forward.scale(10.0)));
             n::set_cam_fov(cam, camera.fov_degrees.clamp(10.0, 120.0));
         }
+        if let Some(model) = &self.board_model {
+            draw_board(model, &view, self.ride.game.bone_names());
+        }
         if self.draw_body {
-            self.draw_body(&view, config.debug_body || self.poser.is_none());
+            let board_lines = self.prop.is_none() && self.board_model.is_none();
+            self.draw_body(&view, config.debug_body || self.poser.is_none(), board_lines);
         }
         if config.debug_draw {
             self.draw_debug();
@@ -725,7 +770,7 @@ impl RideSession {
     }
 
     /// The Skate 3 skater and board as lines, in place of GTA models.
-    fn draw_body(&self, view: &crate::ride::View, skeleton: bool) {
+    fn draw_body(&self, view: &crate::ride::View, skeleton: bool, board_lines: bool) {
         const BONE: [u8; 4] = [255, 255, 255, 255];
         const BOARD: [u8; 4] = [255, 170, 0, 255];
         let names = self.ride.game.bone_names();
@@ -739,6 +784,9 @@ impl RideSession {
                 continue;
             }
             n::draw_line(p, view.bones[parent as usize].0, BONE);
+        }
+        if !board_lines {
+            return;
         }
         let axes = view.axes;
         let [width, length] = self.ride.game.deck_size();
@@ -789,6 +837,9 @@ impl RideSession {
 
     fn end(self) {
         watch::stop();
+        if self.audio.is_some() {
+            let _ = sound::set_runtime(None);
+        }
         n::set_ped_procedural_layers(self.ped, true);
         if let Some(cam) = self.cam {
             n::render_script_cams(false);
@@ -806,6 +857,98 @@ impl RideSession {
         n::set_entity_coords(self.ped, self.ride.hips_position());
         hud::with_painter(|p| p.clear());
         n::notify("SkateGTA: Skate 3 off");
+    }
+}
+
+/// The skater's Skate 3 sounds for one ride, playing on the sound device; None (logged)
+/// when the audio files are missing or the device is unavailable.
+fn start_audio(root: &std::path::Path, volume: f32) -> Option<skate_gameplay::game_audio::GameAudio> {
+    let started = std::time::Instant::now();
+    let root = root.to_path_buf();
+    let audio = crate::bigstack::run(move || skate_gameplay::game_audio::GameAudio::start(&root));
+    match audio {
+        Ok(audio) => {
+            let r = &audio.report;
+            log(&format!(
+                "Skate 3 audio on in {:.0} ms: {} projects, {} banks, Splice {:?}, rolling bed {}, wheels {}, contacts {}",
+                started.elapsed().as_secs_f32() * 1000.0,
+                r.projects,
+                r.banks.len(),
+                r.splice_banks,
+                r.rolling_bed,
+                r.wheels,
+                r.contacts
+            ));
+            if !r.silent_banks.is_empty() {
+                log(&format!("Skate 3 audio: no WAVs in private\\audio\\banks for {:?} (those sounds are silent)", r.silent_banks));
+            }
+            sound::set_volume(volume);
+            match sound::set_runtime(Some(audio.runtime())) {
+                Ok(()) => Some(audio),
+                Err(e) => {
+                    log(&format!("Skate 3 audio unavailable: {e}"));
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            log(&format!("Skate 3 audio unavailable: {e}"));
+            None
+        }
+    }
+}
+
+/// The Skate 3 board from the player's skater.glb, loaded once per game.
+fn load_board_model(root: &std::path::Path) -> Option<std::sync::Arc<crate::board_model::BoardModel>> {
+    static CACHE: std::sync::Mutex<Option<(PathBuf, std::sync::Arc<crate::board_model::BoardModel>)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((path, model)) = cache.as_ref() {
+        if path == root {
+            return Some(model.clone());
+        }
+    }
+    let path = root.join("private").join("skater.glb");
+    let loaded = std::fs::read(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|bytes| crate::board_model::BoardModel::load(&bytes))
+        .map(|m| m.simplified(0.012, &["SKATEBOARD_ROOT"]));
+    match loaded {
+        Ok(model) => {
+            log(&format!("Skate 3 board: {} triangles on {:?}", model.triangles.len(), model.bones));
+            let model = std::sync::Arc::new(model);
+            *cache = Some((root.to_path_buf(), model.clone()));
+            Some(model)
+        }
+        Err(error) => {
+            log(&format!("Skate 3 board model unavailable, drawing lines: {error}"));
+            None
+        }
+    }
+}
+
+/// Draws the board model on the render pose's board bones: flat-shaded
+/// triangles facing the camera, darker at night.
+fn draw_board(model: &crate::board_model::BoardModel, view: &crate::ride::View, names: &[String]) {
+    let frame = |bone: &str| {
+        let i = names.iter().position(|n| n == bone)?;
+        Some((view.bones.get(i)?.0, *view.bone_axes.get(i)?))
+    };
+    let camera = n::get_final_rendered_cam_coord();
+    let hour = n::get_clock_time();
+    // Full light 7-19 h, a quarter at night, linear over two hours.
+    let daylight = ((hour - 5.0) / 2.0).clamp(0.0, 1.0).min(((21.0 - hour) / 2.0).clamp(0.0, 1.0));
+    let brightness = 0.25 + 0.75 * daylight;
+    let light = GtaVec::new(0.3, -0.4, 0.85).normalized();
+    n::set_backface_culling(false);
+    for face in model.place(frame) {
+        let to_camera = camera.sub(face.corners[0]);
+        if face.normal.x * to_camera.x + face.normal.y * to_camera.y + face.normal.z * to_camera.z <= 0.0 {
+            continue;
+        }
+        let lit = face.normal.x * light.x + face.normal.y * light.y + face.normal.z * light.z;
+        let shade = (0.45 + 0.55 * lit.max(0.0)) * brightness;
+        let rgb = face.color.map(|c| (c * shade * 255.0).clamp(0.0, 255.0) as u8);
+        n::draw_poly(face.corners[0], face.corners[1], face.corners[2], [rgb[0], rgb[1], rgb[2], 255]);
     }
 }
 

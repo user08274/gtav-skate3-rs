@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 skate-core = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
 skate-data = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
+skate-audio = { git = "https://github.com/SK8-ENGINE/skate-3-rust-engine", rev = "b3c967932a91d0db74275d14064bb6bdef8608af" }
 
 [profile.dev]
 opt-level = 3

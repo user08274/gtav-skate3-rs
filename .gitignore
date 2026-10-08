@@ -1,1 +1,7 @@
 /target
+
+# Skate 3 data never goes into the repository
+*.wav
+*.abk
+*.csi
+*.glb

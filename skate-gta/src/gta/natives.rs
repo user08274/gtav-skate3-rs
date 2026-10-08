@@ -208,6 +208,32 @@ pub fn set_ped_procedural_layers(ped: Entity, enabled: bool) {
     call!(0x6373D1349925A70E, ped, enabled); // SET_PED_CAN_PLAY_AMBIENT_ANIMS
 }
 
+/// One flat-coloured world triangle this frame.
+pub fn draw_poly(a: GtaVec, b: GtaVec, c: GtaVec, rgba: [u8; 4]) {
+    call!(
+        0xAC26716048436851, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, rgba[0] as i32, rgba[1] as i32, rgba[2] as i32,
+        rgba[3] as i32,
+    );
+}
+pub fn set_backface_culling(on: bool) {
+    call!(0x23BA6B0C2AD7B0D3, on);
+}
+/// Position of the camera the frame is rendered from.
+pub fn get_final_rendered_cam_coord() -> GtaVec {
+    ret_vec(call!(0xA200EB1EE790F448))
+}
+/// GET_FINAL_RENDERED_CAM_ROT (degrees: pitch, roll, yaw; rotation order 2).
+pub fn get_final_rendered_cam_rot() -> GtaVec {
+    ret_vec(call!(0x5B4E4C817FCC2DFB, 2i32))
+}
+pub fn is_pause_menu_active() -> bool {
+    ret_bool(call!(0xB0034A223497FFCB))
+}
+/// In-game time of day, hours as a fraction.
+pub fn get_clock_time() -> f32 {
+    ret_i32(call!(0x25223CA6B4D20B7F)) as f32 + ret_i32(call!(0x13D2B8ADD79640F2)) as f32 / 60.0
+}
+
 /// Screen aspect ratio (width / height).
 pub fn get_aspect_ratio() -> f32 {
     ret_f32(call!(0xF1307EF624A80D87, false))
